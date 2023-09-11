@@ -25,6 +25,11 @@ set(CMAKE_MODULE_PATH
   ${CMAKE_MODULE_PATH}
   "${CMAKE_CURRENT_LIST_DIR}/cmake"
 )
+
+set(CMAKE_BUILD_TYPE Debug)
+# set(CMAKE_BUILD_TYPE Release)
+
+
 # build options
 option(MNN_USE_SYSTEM_LIB "For opencl and vulkan, use system lib or use dlopen" OFF)
 option(MNN_BUILD_HARD "Build -mfloat-abi=hard or not" OFF)
@@ -205,7 +210,7 @@ if (CMAKE_SYSTEM_NAME MATCHES "^Android" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^ar
 endif()
 
 # target options
-option(MNN_BUILD_BENCHMARK "Build benchmark or not" OFF)
+option(MNN_BUILD_BENCHMARK "Build benchmark or not" ON)
 option(MNN_BUILD_TEST "Build tests or not" OFF)
 option(MNN_BUILD_FOR_ANDROID_COMMAND "Build from command" OFF)
 option(MNN_USE_LOGCAT "Use Logcat intead of print for info" ON)
@@ -739,6 +744,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/test/CMakeLists.txt)
 ENDIF()
 IF(MNN_BUILD_BENCHMARK)
 include(${CMAKE_CURRENT_LIST_DIR}/benchmark/CMakeLists.txt)
+include(${CMAKE_CURRENT_LIST_DIR}/yolo/CMakeLists.txt)
 ENDIF()
 IF(MNN_BUILD_QUANTOOLS)
 include(${CMAKE_CURRENT_LIST_DIR}/tools/quantization/CMakeLists.txt)
