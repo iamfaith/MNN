@@ -57,6 +57,7 @@ public:
     float prob;
     float x, y, width, height;
     float x1, y1;
+    float area;
 
     // Object(int label, float prob, float x, float y, float width, float height)
 };
@@ -99,6 +100,19 @@ void displayStats(const std::vector<float> &costs, const std::string &name = "de
     printf("[ - ] %-24s    max = %8.3f ms  min = %8.3f ms  avg = %8.3f ms\n", model.c_str(), max, avg == 0 ? 0 : min, avg);
 }
 
+static inline float IntersectArea(Object a, Object b)
+{
+    float x = fmax(a.x, b.x);
+    float num1 = fmin(a.x + a.width, b.x + b.width);
+    float y = fmax(a.y, b.y);
+    float num2 = fmin(a.y + a.height, b.y + b.height);
+    if (num1 >= x && num2 >= y)
+        // return new Rectangle(x, y, num1 - x, num2 - y);
+        return (num1 - x) * (num2 - y);
+    else
+        return 0;
+}
+
 int main(int argc, char *argv[])
 {
 
@@ -119,13 +133,16 @@ int main(int argc, char *argv[])
     }
 
     const char *model_file = "/home/faith/best5000-sim.mnn";
-    auto revertor = std::unique_ptr<Revert>(new Revert(model_file));
-    int sparseBlockOC = 1;
-    revertor->initialize(0, sparseBlockOC, false, true);
-    auto modelBuffer = revertor->getBuffer();
-    const auto bufferSize = revertor->getBufferSize();
-    auto net = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromBuffer(modelBuffer, bufferSize));
-    revertor.reset();
+    // const char *model_file = "/home/faith/new.mnn";
+
+    // auto revertor = std::unique_ptr<Revert>(new Revert(model_file));
+    // int sparseBlockOC = 1;
+    // revertor->initialize(0, sparseBlockOC, false, true);
+    // auto modelBuffer = revertor->getBuffer();
+    // const auto bufferSize = revertor->getBufferSize();
+    // auto net = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromBuffer(modelBuffer, bufferSize));
+    // revertor.reset();
+    auto net = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile(model_file));
     net->setSessionMode(MNN::Interpreter::Session_Release);
     MNN::ScheduleConfig config;
     int numberThread = 16;
@@ -192,25 +209,53 @@ int main(int argc, char *argv[])
     //     }
     //     // printf("%d ", ((unsigned char *)imgmat->data)[i]);
     // }
-    printf("\n");
+    // printf("\n");
     free(newmat);
     free(clast);
     int inputSize = outw * outh * originChannel;
 
-    MNN::Tensor givenTensor(input, MNN::Tensor::CAFFE);
-    auto inputData = givenTensor.host<float>();
+    // MNN::Tensor givenTensor(input, MNN::Tensor::CAFFE);
+    // auto inputData = givenTensor.host<float>();
     const float norm_val = 1 / 255.f;
     for (int i = 0; i < inputSize; ++i)
     {
         float _pixel = *(padding_m + i) * norm_val;
-        inputData[i] = static_cast<float>(_pixel);
+        *(padding_m + i) = _pixel;
+
+        // inputData[i] = static_cast<float>(_pixel);
         // std::cout << inputData[i] << " ";
     }
-    std::cout << inputSize << " " << originChannel << " " << resize_h << std::endl;
-    input->copyFromHostTensor(&givenTensor);
+
+    // // 假设你有一个指针指向一段数据，比如一个图片
+    // unsigned char* data = ...;
+    // // 假设你知道这个数据的形状和类型，比如[1, 3, 224, 224]和uint8
+    std::vector<int> shape = {1, 3, outh, outw};
+    std::cout << outh << std::endl;
+    halide_type_t type = halide_type_of<float>();
+    // 创建一个host端的Tensor，使用data作为数据源，使用CAFFE表示NCHW格式
+    // MNN::Tensor *givenTensor = MNN::Tensor::create(shape, type, padding_m, MNN::Tensor::TENSORFLOW);
+    // MNN::Tensor *givenTensor = MNN::Tensor::create(shape, type, padding_m, MNN::Tensor::CAFFE);
+    MNN::Tensor *givenTensor = MNN::Tensor::create(shape, type, padding_m, input->getDimensionType());
+    // // 获取device端的Tensor，比如从Interpreter中获取输入或输出
+    // MNN::Tensor* deviceTensor = ...;
+    // // 将host端的Tensor的数据拷贝到device端的Tensor中
+    // deviceTensor->copyFromHostTensor(hostTensor);
+
+    auto given = givenTensor->host<float>();
+    for (int i = 0, count = 0; count < 50; i++)
+    {
+        if (i > top * resize_w + left)
+        {
+            printf("%f[%f] ", ((float *)padding_m)[i], given[i]);
+            count++;
+        }
+    }
+    printf("\n");
+
+    // givenTensor->print();
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    const MNN::Backend *inBackend = net->getBackend(session, input);
+    // const MNN::Backend *inBackend = net->getBackend(session, input);
 
     // create random tensor
     // std::shared_ptr<MNN::Tensor> givenTensor(MNN::Tensor::createHostTensorFromDevice(input, false));
@@ -218,7 +263,7 @@ int main(int argc, char *argv[])
     auto outputTensor = net->getSessionOutput(session, NULL);
     // std::shared_ptr<MNN::Tensor> expectTensor(MNN::Tensor::createHostTensorFromDevice(outputTensor, false));
 
-    int warmup = 0;
+    int warmup = 5;
     int loop = 1;
 
     // Warming up...
@@ -236,10 +281,15 @@ int main(int argc, char *argv[])
     for (int round = 0; round < loop; round++)
     {
         MNN::Timer _t;
-        void *host = input->map(MNN::Tensor::MAP_TENSOR_WRITE, input->getDimensionType());
-        input->unmap(MNN::Tensor::MAP_TENSOR_WRITE, input->getDimensionType(), host);
+        bool ret = input->copyFromHostTensor(givenTensor);
+        std::cout << "ret:" << ret << " " << true << " " << input->getDimensionType() << std::endl;
+
+        // void *host = input->map(MNN::Tensor::MAP_TENSOR_WRITE, input->getDimensionType());
+        // input->unmap(MNN::Tensor::MAP_TENSOR_WRITE, input->getDimensionType(), host);
         net->runSession(session);
         auto outputTensor = net->getSessionOutput(session, "output");
+
+        std::cout << "out:" << outputTensor->getDimensionType() << std::endl;
         MNN::Tensor tensor_scores_host(outputTensor, outputTensor->getDimensionType());
         // 拷贝数据
         outputTensor->copyToHostTensor(&tensor_scores_host);
@@ -247,15 +297,16 @@ int main(int argc, char *argv[])
 
         // tensor_scores_host.print();
         // 获取host指针
-        float *host0 = tensor_scores_host.host<float>();
+        auto host0 = tensor_scores_host.host<float>();
         // void *host0 = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ, outputTensor->getDimensionType());
-        // float* host0 = (float*)tensor_scores_host.buffer().host;
+        // float *host0 = (float *)tensor_scores_host.buffer().host;
         for (int i = 0; i < 100; i++)
         {
-            std::cout << host0[i] << "[" << inputData[i] << "]"
-                      << " ";
+            // std::cout << host0[i] << " ";
+            // printf("%f %f ", host0[i], padding_m[i]);
+            printf("%f ", host0[i]);
         }
-        std::cout << std::endl;
+        std::cout << "-----" << std::endl;
 
         // 根据维度类型和数据形状，遍历host指针
         // if (dimType == MNN::Tensor::TENSORFLOW) {
@@ -266,17 +317,17 @@ int main(int argc, char *argv[])
         //     }
         // }
 
-        // 打印形状向量
-        // printf("The shape of host is: [");
-        // for (int i = 0; i < shape.size(); i++)
-        // {
-        //     printf("%d", shape[i]);
-        //     if (i < shape.size() - 1)
-        //     {
-        //         printf(", ");
-        //     }
-        // }
-        // printf("]\n");
+        // 打印形状向量  [1, 18144, 6]
+        printf("The shape of host is: [");
+        for (int i = 0; i < shape.size(); i++)
+        {
+            printf("%d", shape[i]);
+            if (i < shape.size() - 1)
+            {
+                printf(", ");
+            }
+        }
+        printf("]\n");
 
         auto channel = tensor_scores_host.channel(); // 18144
         auto height = tensor_scores_host.height();   // 6
@@ -289,7 +340,7 @@ int main(int argc, char *argv[])
         std::cout << channel << " " << width << " " << height << " " << num_class << std::endl;
         for (int c_index = 0; c_index < channel; c_index++)
         {
-            float *feat = (float *)host0 + c_index * width * height;
+            float *feat = host0 + c_index * width * height;
 
             // find class index with max class score
             int class_index = 0;
@@ -330,6 +381,7 @@ int main(int argc, char *argv[])
             obj.height = height;
             obj.label = class_index;
             obj.prob = confidence;
+            obj.area = width * height;
 
             l.push_back(obj);
             // std::cout << "---" << std::endl;
@@ -339,6 +391,63 @@ int main(int argc, char *argv[])
         std::sort(l.begin(), l.end(), compare_by_prob);
         int count = l.size();
         std::cout << count << std::endl;
+
+        int picked[count];
+        int picked_size = 0;
+        for (int i = 0; i < count; i++)
+        {
+            const Object a = l[i];
+
+            int keep = 1;
+            for (int j = 0; j < picked_size; j++)
+            {
+                const Object b = l[picked[j]];
+                // intersection over union
+                float inter_area = IntersectArea(a, b);
+                float union_area = a.area + b.area - inter_area;
+                // float IoU = inter_area / union_area
+                if (inter_area / union_area > nms_threshold)
+                    keep = 0;
+            }
+
+            if (keep == 1)
+            {
+                picked[picked_size] = i;
+                picked_size++;
+            }
+        }
+
+        for (int j = 0; j < picked_size; j++)
+        {
+
+            Object b = l[picked[j]];
+            b.x = (b.x - padw) / gain;
+            b.x1 = (b.x1 - padw) / gain;
+
+            b.y = (b.y - padh) / gain;
+            b.y1 = (b.y1 - padh) / gain;
+
+            // clip
+            b.x = fmax(fmin(b.x, (float)(targetWidth - 1)), 0.f);
+            b.y = fmax(fmin(b.y, (float)(targetHeight - 1)), 0.f);
+            b.x1 = fmax(fmin(b.x1, (float)(targetWidth - 1)), 0.f);
+            b.y1 = fmax(fmin(b.y1, (float)(targetHeight - 1)), 0.f);
+
+            b.height = b.y1 - b.y;
+            b.width = b.x1 - b.x;
+
+            // #ifdef __cplusplus
+            //             cv::Rect_<int> r;
+            //             r.x = (int)b->x;
+            //             r.y = (int)b->y;
+            //             r.width = (int)b->width;
+            //             r.height = (int)b->height;
+            //             objects.push_back(r);
+            // #endif
+
+            //             printObject(b);
+            printf("Label %d, Prob: %f, [%f, %f, %f, %f]\n", b.label, b.prob, b.x, b.y, b.x1, b.y1);
+        }
 
         // host = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ, outputTensor->getDimensionType());
         // outputTensor->unmap(MNN::Tensor::MAP_TENSOR_READ, outputTensor->getDimensionType(), host);

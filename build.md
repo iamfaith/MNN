@@ -8,3 +8,6 @@ https://qengineering.eu/install-mnn-on-raspberry-pi-4.html
 
 ./benchmark.out baili/ 100 1 0 4 0
 ./benchmark.out baili/ 100 1 0 4 2
+
+
+./MNNConvert -f ONNX --modelFile ~/AI_baili_train/best5000-sim.onnx --MNNModel new.mnn --bizCode biz
