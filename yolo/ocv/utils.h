@@ -1,5 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
+#if __ARM_NEON
+#include <arm_neon.h>
+#endif // __ARM_NEON
 
 static inline void resize_bilinear_c3(const unsigned char *src, int srcw, int srch, int srcstride, unsigned char *dst, int w, int h, int stride)
 {

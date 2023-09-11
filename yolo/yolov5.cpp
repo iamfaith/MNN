@@ -264,7 +264,7 @@ int main(int argc, char *argv[])
     // std::shared_ptr<MNN::Tensor> expectTensor(MNN::Tensor::createHostTensorFromDevice(outputTensor, false));
 
     int warmup = 5;
-    int loop = 1;
+    int loop = 5;
 
     // Warming up...
     for (int i = 0; i < warmup; ++i)
