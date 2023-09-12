@@ -40,11 +40,11 @@ option(MNN_OPENMP "Use OpenMP's thread pool implementation. Does not work on iOS
 option(MNN_USE_THREAD_POOL "Use MNN's own thread pool implementation" ON)
 option(MNN_BUILD_TRAIN "Build MNN's training framework" OFF)
 option(MNN_BUILD_DEMO "Build demo/exec or not" OFF)
-option(MNN_BUILD_TOOLS "Build tools/cpp or not" ON)
+option(MNN_BUILD_TOOLS "Build tools/cpp or not" OFF)  ############# ON -> OFF
 option(MNN_BUILD_QUANTOOLS "Build Quantized Tools or not" OFF)
 option(MNN_EVALUATION "Build Evaluation Tools or not" OFF)
 option(MNN_BUILD_CONVERTER "Build Converter" OFF)
-option(MNN_SUPPORT_DEPRECATED_OP "Enable MNN's tflite quantized op" ON)
+option(MNN_SUPPORT_DEPRECATED_OP "Enable MNN's tflite quantized op" OFF)   ############# ON -> OFF
 option(MNN_DEBUG_MEMORY "MNN Debug Memory Access" OFF)
 option(MNN_DEBUG_TENSOR_SIZE "Enable Tensor Size" OFF)
 option(MNN_GPU_TRACE "Enable MNN Gpu Debug" OFF)
@@ -582,13 +582,16 @@ IF(MNN_CUDA)
 ENDIF()
 
 # Express
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/express/)
-IF(MNN_SEP_BUILD)
-  list(APPEND MNN_DEPS MNN_Express)
-ELSE()
-   list(APPEND MNN_TARGETS MNN_Express)
-   list(APPEND MNN_OBJECTS_TO_LINK $<TARGET_OBJECTS:MNN_Express>)
-ENDIF()
+#######################################################  comment out 
+# add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/express/)
+# IF(MNN_SEP_BUILD)
+#   list(APPEND MNN_DEPS MNN_Express)
+# ELSE()
+#    list(APPEND MNN_TARGETS MNN_Express)
+#    list(APPEND MNN_OBJECTS_TO_LINK $<TARGET_OBJECTS:MNN_Express>)
+# ENDIF()
+#######################################################  comment out 
+
 
 # Model Internal. Enable MNN internal features such as model authentication and metrics logging.
 if (MNN_INTERNAL)
