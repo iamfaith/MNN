@@ -160,7 +160,7 @@ int main(int argc, char *argv[])
 
     MNN::Tensor *input = net->getSessionInput(session, "images");
 
-    net->releaseModel();
+    // net->releaseModel();
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // 384.000000, 768.000000 h w
@@ -241,16 +241,16 @@ int main(int argc, char *argv[])
     // // 将host端的Tensor的数据拷贝到device端的Tensor中
     // deviceTensor->copyFromHostTensor(hostTensor);
 
-    auto given = givenTensor->host<float>();
-    for (int i = 0, count = 0; count < 50; i++)
-    {
-        if (i > top * resize_w + left)
-        {
-            printf("%f[%f] ", ((float *)padding_m)[i], given[i]);
-            count++;
-        }
-    }
-    printf("\n");
+    // auto given = givenTensor->host<float>();
+    // for (int i = 0, count = 0; count < 50; i++)
+    // {
+    //     if (i > top * resize_w + left)
+    //     {
+    //         printf("%f[%f] ", ((float *)padding_m)[i], given[i]);
+    //         count++;
+    //     }
+    // }
+    // printf("\n");
 
     // givenTensor->print();
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -282,7 +282,7 @@ int main(int argc, char *argv[])
     {
         MNN::Timer _t;
         bool ret = input->copyFromHostTensor(givenTensor);
-        std::cout << "ret:" << ret << " " << true << " " << input->getDimensionType() << std::endl;
+        // std::cout << "ret:" << ret << " " << true << " " << input->getDimensionType() << std::endl;
 
         // void *host = input->map(MNN::Tensor::MAP_TENSOR_WRITE, input->getDimensionType());
         // input->unmap(MNN::Tensor::MAP_TENSOR_WRITE, input->getDimensionType(), host);
@@ -300,13 +300,13 @@ int main(int argc, char *argv[])
         auto host0 = tensor_scores_host.host<float>();
         // void *host0 = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ, outputTensor->getDimensionType());
         // float *host0 = (float *)tensor_scores_host.buffer().host;
-        for (int i = 0; i < 100; i++)
-        {
-            // std::cout << host0[i] << " ";
-            // printf("%f %f ", host0[i], padding_m[i]);
-            printf("%f ", host0[i]);
-        }
-        std::cout << "-----" << std::endl;
+        // for (int i = 0; i < 100; i++)
+        // {
+        //     // std::cout << host0[i] << " ";
+        //     // printf("%f %f ", host0[i], padding_m[i]);
+        //     printf("%f ", host0[i]);
+        // }
+        // std::cout << "-----" << std::endl;
 
         // 根据维度类型和数据形状，遍历host指针
         // if (dimType == MNN::Tensor::TENSORFLOW) {
@@ -318,16 +318,16 @@ int main(int argc, char *argv[])
         // }
 
         // 打印形状向量  [1, 18144, 6]
-        printf("The shape of host is: [");
-        for (int i = 0; i < shape.size(); i++)
-        {
-            printf("%d", shape[i]);
-            if (i < shape.size() - 1)
-            {
-                printf(", ");
-            }
-        }
-        printf("]\n");
+        // printf("The shape of host is: [");
+        // for (int i = 0; i < shape.size(); i++)
+        // {
+        //     printf("%d", shape[i]);
+        //     if (i < shape.size() - 1)
+        //     {
+        //         printf(", ");
+        //     }
+        // }
+        // printf("]\n");
 
         auto channel = tensor_scores_host.channel(); // 18144
         auto height = tensor_scores_host.height();   // 6
@@ -337,7 +337,7 @@ int main(int argc, char *argv[])
 
         const short num_class = height - 5;
         std::vector<Object> l;
-        std::cout << channel << " " << width << " " << height << " " << num_class << std::endl;
+        // std::cout << channel << " " << width << " " << height << " " << num_class << std::endl;
         for (int c_index = 0; c_index < channel; c_index++)
         {
             float *feat = host0 + c_index * width * height;

@@ -1,6 +1,6 @@
 
 
-docker run -it -v $PWD:/build cross-stretch bash
+docker run --rm -it -v $PWD:/home/faith/MNN cross-stretch bash
 
  cmake .. -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_VERSION=1 -DCMAKE_SYSTEM_PROCESSOR=armv7 -DCMAKE_C_COMPILER=/pitools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/bin/arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=/pitools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/bin/arm-linux-gnueabihf-g++
 
