@@ -212,7 +212,7 @@ void Tensor::setType(int type) {
             mBuffer.type = halide_type_of<float>();
             break;
         case DataType_DT_BFLOAT16:
-            mBuffer.type = halide_type_t(halide_type_float, 16);
+            mBuffer.type = halide_type_t(halide_type_bfloat, 16);
             break;
         case DataType_DT_QINT32:
         case DataType_DT_INT32:
@@ -391,8 +391,8 @@ void Tensor::printShape() const {
     MNN_PRINT("\n");
 }
 
-int Tensor::size() const {
-    auto dataSize = mBuffer.type.bytes();
+size_t Tensor::usize() const {
+    size_t dataSize = mBuffer.type.bytes();
     MNN_ASSERT(dataSize >= 1);
     auto nativeDescribe = mDescribe->mContent.get();
     for (int i = 0; i < this->buffer().dimensions; i++) {
@@ -403,6 +403,10 @@ int Tensor::size() const {
         dataSize *= currentDimSize;
     }
     return dataSize;
+}
+
+int Tensor::size() const {
+    return static_cast<int>(usize());
 }
 
 void* Tensor::map(MapType mtype, DimensionType dtype) {
@@ -468,10 +472,27 @@ int Tensor::wait(MapType mtype, bool finish) {
     return bn->onSync(mtype, finish, this);
 }
 
+bool Tensor::setDevicePtr(const void* devicePtr, int memoryType) {
+    mBuffer.flags = memoryType;
+    mBuffer.device = (uint64_t)devicePtr;
+    // To use memoryType afterwards
+    return true;
+}
+
 void Tensor::destroy(Tensor* tensor) {
     if (nullptr != tensor) {
         delete tensor;
     }
+}
+bool Tensor::getDeviceInfo(void* dst, int type) const {
+    auto nativeDescribe = mDescribe->mContent.get();
+    if (nullptr == nativeDescribe->getBackend()) {
+        return false;
+    }
+    if (nativeDescribe->getBackend()->type() != type) {
+        return false;
+    }
+    return nativeDescribe->getBackend()->onGetTensorInfo(this, dst);
 }
 
 } // namespace MNN

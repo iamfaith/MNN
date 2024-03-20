@@ -29,7 +29,7 @@ bool OpenCLRuntime::getDeviceSupportsExtension(const cl::Device &device, const c
     return (pos != std::string::npos);
 }
 
-OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const int cl_mode, int platformSize, int platformId, int deviceId) {
+OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const int cl_mode, int platformSize, int platformId, int deviceId, void *contextPtr, void *glShared) {
 #ifdef LOG_VERBOSE
     MNN_PRINT("start OpenCLRuntime !\n");
 #endif
@@ -152,24 +152,44 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
             const std::string extensions = platforms[0].getInfo<CL_PLATFORM_EXTENSIONS>();
             bool isPriorityHint = (extensions.find("cl_khr_priority_hints") != std::string::npos);
 
-            if(mGpuType == ADRENO && !isPriorityHint){
-                std::vector<cl_context_properties> context_properties;
-                context_properties.reserve(5);
-                context_properties.push_back(CL_CONTEXT_PERF_HINT_QCOM);
-                context_properties.push_back(CL_PERF_HINT_HIGH_QCOM);
-                context_properties.push_back(CL_CONTEXT_PRIORITY_HINT_QCOM);
-                context_properties.push_back(CL_PRIORITY_HINT_LOW_QCOM);
-                context_properties.push_back(0);
-                mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), context_properties.data(), nullptr, nullptr, &res));
-                mIsDeviceSupportedLowPower = true;
+            if(nullptr != contextPtr){
+                if(nullptr != glShared && getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_khr_gl_sharing")){
+                    std::vector<cl_context_properties> context_properties;
+                    context_properties.reserve(7);
+                    context_properties.push_back(CL_GL_CONTEXT_KHR);
+                    context_properties.push_back((cl_context_properties)contextPtr);
+                    context_properties.push_back(CL_EGL_DISPLAY_KHR);
+                    context_properties.push_back((cl_context_properties)glShared);
+                    context_properties.push_back(CL_CONTEXT_PLATFORM);
+                    context_properties.push_back((cl_context_properties)platforms[platformId]());
+                    context_properties.push_back(0);
+                    mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), context_properties.data(), nullptr, nullptr, &res));
+                }
+                else{
+                    mContext = std::shared_ptr<cl::Context>((cl::Context*)contextPtr, [](void* ptr) {
+                        // Do nothing
+                    });
+                }
             }else{
-                mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), nullptr, nullptr, nullptr, &res));
-            }
-
-            MNN_CHECK_CL_SUCCESS(res, "context");
-            if (res != CL_SUCCESS) {
-                mIsCreateError = true;
-                return;
+                if(mGpuType == ADRENO && !isPriorityHint){
+                    std::vector<cl_context_properties> context_properties;
+                    context_properties.reserve(5);
+                    context_properties.push_back(CL_CONTEXT_PERF_HINT_QCOM);
+                    context_properties.push_back(CL_PERF_HINT_HIGH_QCOM);
+                    context_properties.push_back(CL_CONTEXT_PRIORITY_HINT_QCOM);
+                    context_properties.push_back(CL_PRIORITY_HINT_LOW_QCOM);
+                    context_properties.push_back(0);
+                    mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), context_properties.data(), nullptr, nullptr, &res));
+                    mIsDeviceSupportedLowPower = true;
+                }else{
+                    mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), nullptr, nullptr, nullptr, &res));
+                }
+                
+                MNN_CHECK_CL_SUCCESS(res, "context");
+                if (res != CL_SUCCESS) {
+                    mIsCreateError = true;
+                    return;
+                }
             }
             
             mIsDeviceSupportedLowPower = (mIsDeviceSupportedLowPower || isPriorityHint);
@@ -360,14 +380,16 @@ std::map<std::pair<std::string, std::vector<uint32_t>>, std::pair<std::vector<ui
     return mTunedLws;
 }
 
+std::map<std::string, std::vector<std::pair<std::vector<uint32_t>, std::pair<std::vector<uint32_t>, uint32_t>>>>& OpenCLRuntime::getTuneLwsMap() {
+    return mTuneLws;
+}
+
 OpenCLRuntime::~OpenCLRuntime() {
 #ifdef LOG_VERBOSE
     MNN_PRINT("start ~OpenCLRuntime !\n");
 #endif
     clearEvent();
-    releaseRecord();
     mBuildProgramMap.clear();
-    mRecordings.clear();
     mCommandQueuePtr.reset();
     mRecordableQueuePtr.reset();
     mContext.reset();
@@ -484,9 +506,9 @@ cl::Kernel OpenCLRuntime::buildKernel(const std::string &programName, const std:
                                       const std::set<std::string> &buildOptions) {
     std::string buildOptionsStr;
     if (mIsSupportedFP16) {
-        buildOptionsStr = "-DFLOAT=half -DFLOAT2=half2 -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DRI_F=read_imageh -DWI_F=write_imageh -DCONVERT_FLOAT4=convert_half4 -DMNN_SUPPORT_FP16";
+        buildOptionsStr = "-DFLOAT=half -DFLOAT2=half2 -DFLOAT3=half3 -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DRI_F=read_imageh -DWI_F=write_imageh -DCONVERT_FLOAT4=convert_half4 -DCONVERT_FLOAT8=convert_half8 -DCONVERT_FLOAT16=convert_half16 -DMNN_SUPPORT_FP16";
     } else {
-        buildOptionsStr = "-DFLOAT=float  -DFLOAT2=float2 -DFLOAT4=float4 -DFLOAT8=float8 -DRI_F=read_imagef -DFLOAT16=float16 -DWI_F=write_imagef -DCONVERT_FLOAT4=convert_float4";
+        buildOptionsStr = "-DFLOAT=float  -DFLOAT2=float2 -DFLOAT3=float3 -DFLOAT4=float4 -DFLOAT8=float8 -DRI_F=read_imagef -DFLOAT16=float16 -DWI_F=write_imagef -DCONVERT_FLOAT4=convert_float4 -DCONVERT_FLOAT8=convert_float8 -DCONVERT_FLOAT16=convert_float16";
     }
     
     if(isSetWorkGroupAttribute) {
@@ -726,59 +748,10 @@ bool OpenCLRuntime::setCache(std::pair<const void*, size_t> cache) {
             }
             uint32_t cost = tun->timeCost();
             mTunedLws.insert(std::make_pair(std::make_pair(tun->key()->str(), glo), std::make_pair(loc, cost)));
+            mTuneLws[tun->key()->str()].push_back(std::make_pair(glo, std::make_pair(loc, cost)));
         }
     }
     return true;
-}
-
-void OpenCLRuntime::clearRecord(){
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(mUseRecordQueue && mDevideOpRecord){
-        for(int i = 0; i < mRecordings.size(); ++i){
-            cl_int res = mCommandQueuePtr->EnqueueRecordingQCOM(mRecordings[i], 0, nullptr, 0, nullptr,
-                  0, nullptr, 0, nullptr, 0, nullptr, nullptr);
-            MNN_CHECK_CL_SUCCESS(res, "EnqueueRecordingQCOM");
-        }
-        mCommandQueuePtr->finish();
-        mRecordings.clear();
-    }
-#endif
-}
-
-void OpenCLRuntime::enqeueRecord(){
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(mUseRecordQueue && !mDevideOpRecord){
-        for(int i = 0; i < mRecordings.size(); ++i){
-            cl_int res = mCommandQueuePtr->EnqueueRecordingQCOM(mRecordings[i], 0, nullptr, 0, nullptr,
-                  0, nullptr, 0, nullptr, 0, nullptr, nullptr);
-            MNN_CHECK_CL_SUCCESS(res, "EnqueueRecordingQCOM");
-        }
-        mCommandQueuePtr->finish();
-    }
-#endif
-}
-
-void OpenCLRuntime::endRecord(){
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(mUseRecordQueue  && !mDevideOpRecord){
-        if(!mRecordings.empty()){
-            cl_int res = clEndRecordingQCOM(mRecordings.back());
-            MNN_CHECK_CL_SUCCESS(res, "clEndRecordingQCOM");
-        }
-    }
-#endif
-}
-
-void OpenCLRuntime::releaseRecord(){
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(mUseRecordQueue  && !mDevideOpRecord){
-        for(int i = 0; i < mRecordings.size(); ++i){
-            cl_int res = clReleaseRecordingQCOM(mRecordings[i]);
-            MNN_CHECK_CL_SUCCESS(res, "clReleaseRecordingQCOM");
-        }
-        mRecordings.clear();
-    }
-#endif
 }
 
 void OpenCLRuntime::printEventTime(){

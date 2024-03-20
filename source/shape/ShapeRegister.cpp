@@ -109,6 +109,16 @@ extern void ___PackComputer__OpType_Pack__();
 extern void ___DeconvolutionSizeComputer__OpType_Deconvolution__();
 extern void ___DeconvolutionSizeComputer__OpType_DeconvolutionDepthwise__();
 
+#ifdef MNN_SUPPORT_RENDER
+extern void ___RasterAndInterpolateComputer__OpType_RasterAndInterpolate__();
+extern void ___TextureComputer__OpType_Texture__();
+#endif
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+extern void ___SplitGeLUSizeComputer__OpType_SplitGeLU__();
+extern void ___SeqLen2SpatialSizeComputer__OpType_SeqLen2Spatial__();
+extern void ___FmhaV2SizeComputer__OpType_FmhaV2__();
+extern void ___FmhcaSizeComputer__OpType_Fmhca__();
+#endif
 void registerShapeOps() {
 ___ShapeSizeComputer__OpType_Shape__();
 ___ShapeRasterComputer__OpType_Raster__();
@@ -218,5 +228,15 @@ ___SpaceToBatchNDSizeComputer__OpType_SpaceToBatchND__();
 ___PackComputer__OpType_Pack__();
 ___DeconvolutionSizeComputer__OpType_Deconvolution__();
 ___DeconvolutionSizeComputer__OpType_DeconvolutionDepthwise__();
+#ifdef MNN_SUPPORT_RENDER
+___RasterAndInterpolateComputer__OpType_RasterAndInterpolate__();
+___TextureComputer__OpType_Texture__();
+#endif
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+___SplitGeLUSizeComputer__OpType_SplitGeLU__();
+___SeqLen2SpatialSizeComputer__OpType_SeqLen2Spatial__();
+___FmhaV2SizeComputer__OpType_FmhaV2__();
+___FmhcaSizeComputer__OpType_Fmhca__();
+#endif
 }
 }

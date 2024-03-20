@@ -17,6 +17,7 @@
 #include "BinaryUtils.hpp"
 #include "math/Vec.hpp"
 using Vec4 = MNN::Math::Vec<float, 4>;
+using Vec4Int = MNN::Math::Vec<int32_t, 4>;
 
 namespace MNN {
 
@@ -87,13 +88,13 @@ ErrorCode CPUBinary::onExecute(const std::vector<Tensor*>& inputs, const std::ve
     MNN_CONCURRENCY_END();
     
     if(mActivationType == 1 && output->getType().code == halide_type_float) {
-        mActivationExe->onExecute(outputs, outputs);;
+        mActivationExe->onExecute(outputs, outputs);
     }
     return NO_ERROR;
 }
 
 MNNBinaryExecute CPUBinary::selectForFloat(int type) {
-    auto vecFunction = selectVector<Vec4, 4>(type);
+    auto vecFunction = selectVector<Vec4, 4, float>(type);
     if (nullptr != vecFunction) {
         return vecFunction;
     }
@@ -130,6 +131,10 @@ MNNBinaryExecute CPUBinary::selectForFloat(int type) {
 }
 
 MNNBinaryExecute CPUBinary::selectForInt(int type) {
+    auto vecFunction = selectVector<Vec4Int, 4, int32_t>(type);
+    if (nullptr != vecFunction) {
+        return vecFunction;
+    }
     switch (type) {
         case BinaryOpOperation_MUL:
             return execute<int32_t, int32_t, BinaryMul<int32_t, int32_t, int32_t>>;

@@ -11,6 +11,7 @@
 
 #include <set>
 #include <vector>
+#include <MNN/ErrorCode.hpp>
 #include "MNN_generated.h"
 #include "backend/cuda/core/runtime/CUDARuntime.hpp"
 #include "core/Backend.hpp"
@@ -39,6 +40,8 @@ public:
         return Compiler_Loop;
     }
     virtual float onGetMemoryInMB() override;
+    virtual std::pair<const void*, size_t> onGetCache() override;
+    virtual bool onSetCache(const void* buffer, size_t size) override;
 
 private:
     std::shared_ptr<EagerBufferAllocator> mBufferPool;
@@ -60,12 +63,13 @@ public:
     virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs,
                                 const MNN::Op *op) override;
     virtual void onResizeBegin() override;
-    virtual void onResizeEnd() override;
+    virtual ErrorCode onResizeEnd() override;
 
     virtual void onExecuteBegin() const override;
     virtual void onExecuteEnd() const override;
 
     virtual void onCopyBuffer(const Tensor *srcTensor, const Tensor *dstTensor) const override;
+    virtual int onSync(Tensor::MapType mtype, bool toCpu, const Tensor* dstTensor) override;
 
     class Creator {
     public:
@@ -90,6 +94,7 @@ public:
     int getPrecision() const;
     #ifdef MNN_CODEGEN_CUDA
     std::map<std::pair<std::string, std:: string>, CUmodule> kernelCuModuleMap();
+    void compile(CUmodule* dst, std::pair<string, string> code, std::vector<const char*> compile_params);
     #endif
 private:
     std::shared_ptr<BufferAllocator> mBufferPool;

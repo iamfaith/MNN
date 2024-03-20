@@ -1,6 +1,7 @@
 #ifdef MNN_SUPPORT_FP16
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #endif
+#define PI 3.141592653589f
 
 __kernel void binary_buf(__private int global_dim0, __private int global_dim1,
                          __global FLOAT* input0, __global FLOAT* input1, __global FLOAT* output,
@@ -11,15 +12,24 @@ __kernel void binary_buf(__private int global_dim0, __private int global_dim1,
     
     if (pos.x < global_dim0 && pos.y < global_dim1) {
         int offset = pos.x * (shape.y*shape.z) + pos.y;
+#ifdef OPENCL_INPUT_INT
+        FLOAT4 in0 = CONVERT_FLOAT4(convert_int4(vload4(offset*isFull.x, input0)));
+        FLOAT4 in1 = CONVERT_FLOAT4(convert_int4(vload4(offset*isFull.y, input1)));
+#else
         FLOAT4 in0 = vload4(offset*isFull.x, input0);
         FLOAT4 in1 = vload4(offset*isFull.y, input1);
+#endif
         if(isFull.x == 0) {
             in0 = (FLOAT4)(in0.x, in0.x, in0.x, in0.x);
         }
         if(isFull.y == 0) {
             in1 = (FLOAT4)(in1.x, in1.x, in1.x, in1.x);
         }
+#ifdef OPENCL_INPUT_INT
+        FLOAT4 out = CONVERT_FLOAT4(convert_int4(OPERATOR));
+#else
         FLOAT4 out = CONVERT_FLOAT4(OPERATOR);
+#endif
         if(activationType == 1) {
             out = fmax(out, (FLOAT4)0);
         }
@@ -36,9 +46,15 @@ __kernel void prelu_buf(__private int global_dim0, __private int global_dim1,
     
     if (pos.x < global_dim0 && pos.y < global_dim1) {
         int offset = pos.x * (shape.y*shape.z) + pos.y;
+#ifdef OPENCL_INPUT_INT
+        FLOAT4 in0 = CONVERT_FLOAT4(convert_int4(vload4(offset, input0)));
+        FLOAT4 in1 = CONVERT_FLOAT4(convert_int4(vload4(pos.x % shape.w, input1)));
+        FLOAT4 out = CONVERT_FLOAT4(convert_int4(OPERATOR));
+#else
         FLOAT4 in0 = vload4(offset, input0);
         FLOAT4 in1 = vload4(pos.x % shape.w, input1);
         FLOAT4 out = CONVERT_FLOAT4(OPERATOR);
+#endif
         vstore4(out, offset, output);
     }
 }

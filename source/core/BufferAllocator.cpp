@@ -72,6 +72,9 @@ private:
     BufferAllocator* mParent;
 };
 
+ErrorCode BufferAllocator::compute() {
+    return NO_ERROR;
+}
 std::shared_ptr<BufferAllocator::Allocator> BufferAllocator::Allocator::createDefault() {
     std::shared_ptr<BufferAllocator::Allocator> _res;
     _res.reset(new DefaultAllocator);
@@ -182,8 +185,8 @@ bool EagerBufferAllocator::free(MemChunk chunk) {
         returnMemory(&mFreeList, node);
     }
 #ifdef DUMP_USAGE
-    if (x->second.get()) {
-        auto memoryUsed = x->second->size / 1024.0f / 1024.0f;
+    if (node.get()) {
+        auto memoryUsed = node->size / 1024.0f / 1024.0f;
         MNN_PRINT("Free: %f\n", memoryUsed);
     }
 #endif
@@ -290,6 +293,9 @@ MemChunk DeferBufferAllocator::alloc(size_t size, bool separate, size_t align) {
     if (mFreeList.empty() || separate) {
         auto newChunk = createMemNode(size);
         insert_after(newChunk);
+#ifdef DUMP_USAGE
+    MNN_PRINT("Defer alloc: %p\n", newChunk);
+#endif
         return MemChunk(newChunk);
     }
     std::unique_ptr<MemNode> tmpChunk(new MemNode(size));
@@ -310,9 +316,15 @@ MemChunk DeferBufferAllocator::alloc(size_t size, bool separate, size_t align) {
     }
     // equal no change; small expand
     selectChunk->size = size;
+#ifdef DUMP_USAGE
+    MNN_PRINT("Defer alloc: %p\n", selectChunk);
+#endif
     return MemChunk(selectChunk);
 }
 bool DeferBufferAllocator::free(MemChunk chunk) {
+#ifdef DUMP_USAGE
+    MNN_PRINT("Defer free: %p\n", chunk.mNode);
+#endif
     if (mBarrrier) {
         mBarrrierFreeChunks.emplace_back(std::move(chunk));
         return true;
@@ -383,16 +395,20 @@ void DeferBufferAllocator::reset() {
     mBarrrierFreeChunks.clear();
 }
 
-size_t DeferBufferAllocator::compute() {
+ErrorCode DeferBufferAllocator::compute() {
     if (mPtr.ptr()) {
-        return mTotalSize;
+        return NO_ERROR;
     }
     mTotalSize = 0;
     if (mFreeList.empty()) {
-        return mTotalSize;
+        return NO_ERROR;
     }
     MNN_ASSERT(mFreeList.size() == 1);
     MNN_ASSERT(mHead == mTail);
+    if (mFreeList.size() != 1 || mHead != mTail) {
+        // Defer allocator compute error
+        return INVALID_VALUE;
+    }
     auto chunk = mHead;
     while (chunk) {
         chunk->offset = mTotalSize;
@@ -401,6 +417,9 @@ size_t DeferBufferAllocator::compute() {
         chunk = chunk->right;
     }
     mPtr = mAllocator->onAlloc(mTotalSize, mAlign);
+    if (mPtr.ptr() == nullptr) {
+        return OUT_OF_MEMORY;
+    }
     // mPtr.reset(static_cast<uint8_t*>(malloc(mTotalSize)));
     for (auto& chunk : mChunks) {
         chunk->base = mPtr.ptr();
@@ -408,7 +427,7 @@ size_t DeferBufferAllocator::compute() {
             t->buffer().host = mPtr.ptr() + chunk->offset;
         }
     }
-    return mTotalSize;
+    return NO_ERROR;
 }
 
 // some utils functions of DeferBufferAllocator

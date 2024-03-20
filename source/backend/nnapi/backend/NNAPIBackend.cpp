@@ -252,10 +252,11 @@ namespace MNN {
         mQuantCacheMap.clear();
     }
 
-    void NNAPIBackend::onResizeEnd() {
+    ErrorCode NNAPIBackend::onResizeEnd() {
         buildModel();
         mHalfBuffer.clear();
         mQuantCacheMap.clear();
+        return NO_ERROR;
     }
     uint32_t NNAPIBackend::getTensorIdx(const Tensor* t, bool dequant) {
         if (dequant) {
@@ -453,7 +454,7 @@ namespace MNN {
         return NO_ERROR;
     }
 
-    void NNAPIBackend::buildModel() {
+    ErrorCode NNAPIBackend::buildModel() {
         // set input and output of model
         std::vector<uint32_t> inputOperands(mInputTensors.size()), outputOperands(mOutputTensors.size());
         for (int i = 0; i < mInputTensors.size(); i++) {
@@ -503,6 +504,7 @@ namespace MNN {
         CHECK(ANeuralNetworksCompilation_setPreference_27, mNNAPICompilation, ANEURALNETWORKS_PREFER_SUSTAINED_SPEED);
         CHECK(ANeuralNetworksCompilation_finish_27, mNNAPICompilation);
         CHECK(ANeuralNetworksBurst_create_29, mNNAPICompilation, &mNNAPIBurst);
+        return NO_ERROR;
     }
 
     void NNAPIBackend::invokeModel() const {

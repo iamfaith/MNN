@@ -38,7 +38,7 @@ USER_HOME="$(echo -n $(bash -c "cd ~${USER_NAME} && pwd"))"
 
 # detect change
 SOURCE_CHANGE=$(git show --name-only | grep -E "^source/(internal|backend|core|common|cv|geometry|math|plugin|shape|utils)/.*\.(cpp|cc|c|hpp)$" | \
-                grep -Ev "aliyun-log-c-sdk|hiai|tensorrt|BackendRegister|FunctionDispatcher|ThreadPool")
+                grep -Ev "aliyun-log-c-sdk|hiai|tensorrt|Backend|FunctionDispatcher|ThreadPool")
 PYMNN_CHANGE=$(git show --name-only | grep -E "^pymnn/.*\.(cpp|cc|c|h|hpp|py)$")
 PY_CHANGE=$(git show --name-only | grep -E "^pymnn/pip_package/MNN/.*\.(py)$")
 OPENCV_CHANGE=$(git show --name-only | grep -E "^tools/cv/.*\.(cpp|cc|c|h|hpp)$")
@@ -169,6 +169,7 @@ android_static_build() {
     -DMNN_OPENGL=true \
     -DMNN_BUILD_TRAIN=true \
     -DMNN_VULKAN=true \
+    -DMNN_OPENCL=true \
     -DMNN_SUPPORT_BF16=true \
     -DMNN_OPENCL=true -DMNN_ARM82=true \
     -DNATIVE_LIBRARY_OUTPUT=. -DNATIVE_INCLUDE_OUTPUT=. $1 $2 $3
@@ -198,6 +199,7 @@ android_static_build() {
     -DMNN_OPENGL=true \
     -DMNN_BUILD_TRAIN=true \
     -DMNN_VULKAN=true \
+    -DMNN_OPENCL=true \
     -DMNN_BUILD_MINI=true \
     -DMNN_SUPPORT_BF16=true \
     -DMNN_OPENCL=true\
@@ -235,6 +237,7 @@ linux_build() {
         -DCMAKE_BUILD_TYPE=Release \
         -DMNN_BUILD_TEST=ON \
         -DMNN_CUDA=ON \
+        -DMNN_OPENCL=ON \
         -DMNN_BUILD_QUANTOOLS=ON \
         -DMNN_BUILD_DEMO=ON \
         -DMNN_BUILD_CONVERTER=ON \
@@ -267,6 +270,12 @@ unit_test() {
         echo '### 多线程单元测试失败，测试终止！'
         failed
     fi
+    
+    ./run_test.out op 3 1 4
+    if [ $? -ne 0 ]; then
+        echo '### OpenCL单元测试失败，测试终止！'
+        failed
+    fi
 }
 
 model_test() {
@@ -279,6 +288,12 @@ model_test() {
     ../tools/script/modelTest.py ~/AliNNModel 0 0.002 0 1
     if [ $? -ne 0 ]; then
         echo '### 静态模型测试失败，测试终止！'
+        failed
+    fi
+    
+    ../tools/script/modelTest.py ~/AliNNModel 3 0.002 1
+    if [ $? -ne 0 ]; then
+        echo '### OpenCL模型测试失败，测试终止！'
         failed
     fi
 }
@@ -408,6 +423,25 @@ opencv_test() {
     fi
 }
 
+llm_test() {
+    # 1. build llm with low memory
+    cmake -DMNN_OPENCV_TEST=ON -DMNN_BUILD_LLM=ON ..
+    make -j8
+    llm_build_wrong=$[$? > 0]
+    printf "TEST_NAME_LLM_BUILD: LLM编译测试\nTEST_CASE_AMOUNT_LLM_BUILD: {\"blocked\":0,\"failed\":%d,\"passed\":%d,\"skipped\":0}\n" \
+            $llm_build_wrong $[1 - $llm_build_wrong]
+    if [ $llm_build_wrong -ne 0 ]; then
+        echo '### LLM编译失败，测试终止！'
+        failed
+    fi
+    # 2. run llm model test
+    ./llm_demo ~/AliNNModel/qwen-1.8b-int4 ~/AliNNModel/qwen-1.8b-int4/prompt.txt
+    if [ $? -gt 0 ]; then
+        echo '### LLM模型测试失败，测试终止！'
+        failed
+    fi
+}
+
 coverage_init() {
     popd
     lcov -c -i -d ./ -o init.info
@@ -462,10 +496,17 @@ android_unit_test() {
         echo '### Android单元测试卷积FP16多线程失败，测试终止！'
         failed
     fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op 3 1 4 $1"
+    if [ $? -ne 0 ]; then
+        echo '### Android单元测试OpenCL失败，测试终止！'
+        failed
+    fi
 }
 android_model_test() {
     fail_num=0
     pass_num=0
+    fail_cl_num=0
+    pass_cl_num=0
     models=`ls ~/AliNNModel/OpTestResource/`
     for model in $models
     do
@@ -474,6 +515,12 @@ android_model_test() {
             fail_num=$[$fail_num+1]
         else
             pass_num=$[$pass_num+1]
+        fi
+        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/OpTestResource/$model/temp.bin ../AliNNModel/OpTestResource/$model/input_0.txt ../AliNNModel/OpTestResource/$model/output_0.txt 3 0.002 1"
+        if [ $? -ne 0 ]; then
+            fail_cl_num=$[$fail_cl_num+1]
+        else
+            pass_cl_num=$[$pass_cl_num+1]
         fi
     done
     
@@ -486,6 +533,12 @@ android_model_test() {
         else
             pass_num=$[$pass_num+1]
         fi
+        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/TestResource/$model/temp.bin ../AliNNModel/TestResource/$model/input_0.txt ../AliNNModel/TestResource/$model/output.txt 3 0.002 1"
+        if [ $? -ne 0 ]; then
+            fail_cl_num=$[$fail_cl_num+1]
+        else
+            pass_cl_num=$[$pass_cl_num+1]
+        fi
     done
     
     models=`ls ~/AliNNModel/TestWithDescribe/`
@@ -497,10 +550,43 @@ android_model_test() {
         else
             pass_num=$[$pass_num+1]
         fi
+        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModelWithDescribe.out ../AliNNModel/TestWithDescribe/$model/temp.bin ../AliNNModel/TestWithDescribe/$model/config.txt 3 0.002 1"
+        if [ $? -ne 0 ]; then
+            fail_cl_num=$[$fail_cl_num+1]
+        else
+            pass_cl_num=$[$pass_cl_num+1]
+        fi
     done
     printf "TEST_NAME_ANDROID_MODEL_TEST_$1: Android_$1模型测试\nTEST_CASE_AMOUNT_ANDROID_MODEL_TEST_$1: {\"blocked\":0,\"failed\":$fail_num,\"passed\":$pass_num,\"skipped\":0}\n"
     if [ $fail_num -ne 0 ]; then
         echo '### Android模型测试失败，测试终止！'
+        failed
+    fi
+    printf "TEST_NAME_ANDROID_MODEL_OPENCL_TEST_$1: Android_$1模型测试\nTEST_CASE_AMOUNT_ANDROID_MODEL_TEST_$1: {\"blocked\":0,\"failed\":$fail_cl_num,\"passed\":$pass_cl_num,\"skipped\":0}\n"
+    if [ $fail_cl_num -ne 0 ]; then
+        echo '### Android OpenCL后端模型测试失败，测试终止！'
+        failed
+    fi
+}
+android_unit_test_low_memory() {
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 1 1 $1 2"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位Low Memory, precision=1 单元测试失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 2 1 $1 2"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位Low Memory, precision=2 单元测试失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 1 1 $1"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位 权值量化调用1x1Strassen, precision=1 单元测试失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 2 1 $1"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位 权值量化调用1x1Strassen, precision=2 单元测试失败，测试终止！'
         failed
     fi
 }
@@ -510,7 +596,7 @@ android_test() {
     # 1. build Android32
     mkdir build_32
     pushd build_32
-    ../build_32.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    ../build_32.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DMNN_OPENCL=true
     android32_build_wrong=$[$? > 0]
     mnn32_size=$(ls -lh libMNN.so | awk '{print $5}')
     expr32_size=$(ls -lh libMNN_Express.so | awk '{print $5}')
@@ -528,7 +614,7 @@ android_test() {
     # 3. build Android64
     mkdir build_64
     pushd build_64
-    ../build_64.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DMNN_ARM82=true
+    ../build_64.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DMNN_ARM82=true -DMNN_OPENCL=true
     android64_build_wrong=$[$? > 0]
     mnn64_size=$(ls -lh libMNN.so | awk '{print $5}')
     expr64_size=$(ls -lh libMNN_Express.so | awk '{print $5}')
@@ -543,6 +629,25 @@ android_test() {
     ../updateTest.sh
     android_unit_test 64
     android_model_test 64
+    popd
+
+    # 5. build Android64 LowMemory
+    mkdir build_64_lowmemory
+    pushd build_64_lowmemory
+    ../build_64.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DMNN_ARM82=true -DMNN_OPENCL=false -DMNN_LOW_MEMORY=ON
+    android64_build_wrong=$[$? > 0]
+    mnn64_size=$(ls -lh libMNN.so | awk '{print $5}')
+    expr64_size=$(ls -lh libMNN_Express.so | awk '{print $5}')
+    printf "TEST_NAME_ANDROID_64: Android64编译测试(libMNN.so - %s, libMNN_Express.so - %s)\nTEST_CASE_AMOUNT_ANDROID_64: {\"blocked\":0,\"failed\":%d,\"passed\":%d,\"skipped\":0}\n" \
+            $mnn64_size $expr64_size $android64_build_wrong $[1 - $android64_build_wrong]
+    if [ $android64_build_wrong -ne 0 ]; then
+        echo '### Android64编译失败，测试终止！'
+        failed
+    fi
+
+    # 6. test Android64 LowMemory
+    ../updateTest.sh
+    android_unit_test_low_memory aarch64
     popd
     popd
 }
@@ -574,6 +679,7 @@ case "$1" in
         ptq_test
         pymnn_test
         opencv_test
+        llm_test
         coverage_report
         ;;
     android)

@@ -2157,7 +2157,7 @@ static PyObject* PyMNNCVMatrix_repr(PyObject *self) {
     ((PyMNNCVMatrix *)self)->matrix->get9(mat);
     char buffer [100];
     sprintf(buffer, "[[%f\t%f\t%f]\n [%f\t%f\t%f]\n [%f\t%f\t%f]]",
-            mat[0], mat[1], mat[2], mat[3], mat[4], mat[5], mat[5], mat[6], mat[7], mat[8]);
+            mat[0], mat[1], mat[2], mat[3], mat[4], mat[5], mat[6], mat[7], mat[8]);
     return toPyObj(buffer);
 }
 // type: 0 set; 1 pre; 2 post
@@ -2636,14 +2636,22 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
 
 #ifdef PYMNN_EXPR_API
     // for expr multi-thread
+#ifdef PYMNN_USE_ALINNPYTHON
+    // create different excutor for each thread when alinn python
     BackendConfig bnConfig;
     auto threadExecutor = Executor::newExecutor(MNN_FORWARD_CPU, bnConfig, 1);
     // close lazy evaluation in python for speed and memory
     threadExecutor->lazyEval = false;
-#if TARGET_OS_IPHONE
+    #if TARGET_OS_IPHONE
     tlsData->scope = new ExecutorScope(threadExecutor);
-#else
+    #else
     static thread_local ExecutorScope scope(threadExecutor);
+    #endif
+#else
+    // use the same excutor for each thread
+    auto exe = ExecutorScope::Current();
+    // close lazy evaluation in python for speed and memory
+    exe->lazyEval = false;
 #endif
     // _expr submodule
     auto expr_module = def_submodule(m, "_expr");

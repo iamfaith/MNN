@@ -17,16 +17,18 @@
 #include "core/Execution.hpp"
 #include "backend/opencl/core/OpenCLBackend.hpp"
 #include "backend/opencl/core/OpenCLRunningUtils.hpp"
+#include "backend/opencl/execution/image/CommonExtension.hpp"
 namespace MNN {
 namespace OpenCL {
 
-class PoolBufExecution : public Execution {
+class PoolBufExecution : public Execution, public CommonExtension {
 public:
     PoolBufExecution(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend);
     virtual ~PoolBufExecution() = default;
 
     virtual ErrorCode onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
     virtual ErrorCode onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
+    int getLocalSize(int size, int maxGroupSize);
 
 private:
 #ifdef MNN_SUPPORT_INTEL_SUBGROUP

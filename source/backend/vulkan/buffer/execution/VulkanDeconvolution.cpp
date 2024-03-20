@@ -45,7 +45,7 @@ VulkanDeconvolution* VulkanDeconvolution::create(Backend* bn, const Convolution2
     int tempWeightSize   = 0;
     std::shared_ptr<ConvolutionCommon::Int8Common> quanCommon;
     if (!multiInputs) {
-        ConvolutionCommon::getConvParameters(&quanCommon, conv, &tempWeight, &tempWeightSize);
+        ConvolutionCommon::getConvParameters(&quanCommon, bn, conv, &tempWeight, &tempWeightSize);
         MNN_ASSERT(nullptr != tempWeight);
         if (0 >= ci) {
             ci = tempWeightSize / co / kw / kh;
@@ -123,9 +123,7 @@ VulkanDeconvolution* VulkanDeconvolution::create(Backend* bn, const Convolution2
             return nullptr;
         }
         auto tempWeightBuffer = reinterpret_cast<VulkanBuffer*>(tempWeightTensor->deviceId());
-        auto tempReorderWeight = (float*)tempWeightBuffer->map(TensorUtils::getDescribe(tempWeightTensor.get())->extra.offset);
-        ::memcpy(tempReorderWeight, tempWeight, tempWeightSize * sizeof(float));
-        tempWeightBuffer->unmap();
+        vkBn->copyToGPUBuffer(tempWeight, tempWeightBuffer->buffer(), tempWeightSize * sizeof(float), TensorUtils::getDescribe(tempWeightTensor.get())->extra.offset);
         std::shared_ptr<VulkanCommandPool::Buffer> prearrangeCmd( vkBn->getPool().allocBuffer());
         for (auto& reg : des->regions) {
             reg.origin = tempWeightTensor.get();

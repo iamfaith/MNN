@@ -58,6 +58,10 @@ void Executor::setGlobalExecutorConfig(MNNForwardType type, const BackendConfig&
         mAttr->firstType = std::make_pair(type, numberThread);
         info.mode = Backend::Info::DIRECT;
         info.numThread = numberThread;
+        if (MNN_FORWARD_METAL == type) {
+            // Close metal's defer encoder
+            info.numThread |= MNN_GPU_RECORD_OP;
+        }
         info.user = (BackendConfig*)&config;
         std::shared_ptr<Runtime> bn(creator->onCreate(info));
         mRuntimes[mAttr->firstType] = bn;
@@ -120,7 +124,7 @@ Executor::Requirement Executor::getRequirement(Expr* expr) const {
         return req;
     }
     for (int i = 0; i < inputSize; ++i) {
-        req.contentNeedContent[i] = OpCommonUtils::opNeedContent(op->type(), i);
+        req.contentNeedContent[i] = OpCommonUtils::opNeedContent(op, i);
         req.shapeNeedContent[i]   = false;
     }
     auto needIndexId = SizeComputer::needInputContent(op, inputSize);
@@ -145,6 +149,7 @@ std::shared_ptr<Executor> Executor::getGlobalExecutor() {
         info.type = MNN_FORWARD_CPU;
         info.numThread = 1;
         std::shared_ptr<Runtime> bn(creator->onCreate(info));
+        bn->setAllocatorType(info.allocator);
         gExecutor = new std::shared_ptr<Executor>(new Executor(bn, MNN_FORWARD_CPU, 1));
     });
     return *gExecutor;
@@ -255,6 +260,9 @@ void Executor::RuntimeManager::setHint(Interpreter::HintMode mode, int value) {
             break;
         case Interpreter::STRICT_CHECK_MODEL:
             mInside->checkNetBuffer = value > 0;
+            break;
+        case Interpreter::MEM_ALLOCATOR_TYPE:
+            mInside->modes.memoryAllocatorType = value;
             break;
         default:
             break;
@@ -535,8 +543,9 @@ void Executor::_makeCache(const std::vector<EXPRP>& expr, bool forceCPU) {
                 TensorUtils::getDescribe(tensor.get())->quantAttr.reset(new QuantAttr);
                 auto quant = TensorUtils::getDescribe(tensor.get())->quantAttr.get();
                 quant->scale = TensorUtils::getDescribe(srcTensor)->quantAttr.get()->scale;
+                quant->zero = TensorUtils::getDescribe(srcTensor)->quantAttr.get()->zero;
             }
-            
+
             TensorUtils::getDescribe(tensor.get())->index = (int)scheduleInfo.allTensors.size();
             scheduleInfo.allTensors.emplace_back(tensor);
         }
@@ -667,10 +676,9 @@ std::shared_ptr<Executor::SubGraph> Executor::findSubGraph(const std::string& su
     }
     return iter->second;
 }
-void Executor::setLazyComputeMode(LazyMode mode) {
+void Executor::setLazyComputeMode(uint32_t mode) {
     mLazyMode = mode;
 }
-
 
 } // namespace Express
 } // namespace MNN

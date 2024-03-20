@@ -33,7 +33,6 @@ public:
     void onConcurrencyEnd() const;
     virtual bool onCheckInfo(Backend::Info& info) const override;
 
-
 private:
     std::shared_ptr<EagerBufferAllocator> mStaticAllocator;
     int mThreadNumber;
@@ -89,15 +88,18 @@ public:
 
     virtual void onExecuteBegin() const override;
     virtual void onExecuteEnd() const override;
+    virtual void* onMapTensor(Tensor::MapType mtype, Tensor::DimensionType dtype, const Tensor* srcTensor) override;
+
+    virtual bool onUnmapTensor(Tensor::MapType mtype, Tensor::DimensionType dtype, const Tensor* dstTensor, void* mapPtr) override;
     
     virtual void onResizeBegin() override;
-    virtual void onResizeEnd() override;
+    virtual ErrorCode onResizeEnd() override;
 
     const CoreFunctions* functions() const {
         return mCoreFunctions;
     }
     // Return element size for Tensor, conside pack
-    int getTensorSize(const Tensor* tensor, bool multiBytes = false) const;
+    size_t getTensorSize(const Tensor* tensor, bool multiBytes = false) const;
     const CoreInt8Functions* int8Functions() const {
         return mInt8CoreFunctions;
     }
@@ -139,7 +141,7 @@ public:
 
 
 protected:
-    MemObj* allocBuffer(int size, Tensor* dest,  StorageType storageType);
+    MemObj* allocBuffer(size_t size, Tensor* dest,  StorageType storageType);
     const CoreFunctions* mCoreFunctions;
     const CoreInt8Functions* mInt8CoreFunctions;
 private:
@@ -180,6 +182,12 @@ private:
     void ___##name##__##opType##__() {            \
     }
 #endif
+
+#define REGISTER_CPU_OP_CREATOR_RENDER(name, opType)     \
+    void ___##name##__##opType##__() {            \
+        static name _temp;\
+        CPUBackend::addCreator(opType, &_temp); \
+    }
 
 } // namespace MNN
 

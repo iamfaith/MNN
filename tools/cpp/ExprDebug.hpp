@@ -162,6 +162,9 @@ static void _initTimeTrace() {
         return true;
     };
     MNN::TensorCallBackWithInfo callBack = [&](const std::vector<MNN::Tensor*>& ntensors,  const MNN::OperatorInfo* info) {
+        for (auto t : ntensors) {
+            t->wait(MNN::Tensor::MAP_TENSOR_READ, true);
+        }
         gTimeTraceInfo->end();
         return true;
     };
@@ -199,7 +202,7 @@ static void _initTensorStatic() {
                 ntensor = expectTensor.get();
             }
             auto data = _countTensor(ntensor);
-            MNN_PRINT("[Input] %s_%d, Max: %f, Min: %f, Avg: %f, [", opName.c_str(), i, std::get<0>(data), std::get<1>(data), std::get<2>(data));
+            MNN_PRINT("%s [Input] %s_%d, Max: %f, Min: %f, Avg: %f, [", info->type().c_str(), opName.c_str(), i, std::get<0>(data), std::get<1>(data), std::get<2>(data));
             for (int v=0; v<ntensor->dimensions(); ++v) {
                 MNN_PRINT("%d", ntensor->length(v));
                 if (v!=ntensor->dimensions()-1) {
@@ -227,7 +230,7 @@ static void _initTensorStatic() {
                 ntensor = expectTensor.get();
             }
             auto data = _countTensor(ntensor);
-            MNN_PRINT("[Output] %s_%d, Max: %f, Min: %f, Avg: %f, [", opName.c_str(), i, std::get<0>(data), std::get<1>(data), std::get<2>(data));
+            MNN_PRINT("%s [Output] %s_%d, Max: %f, Min: %f, Avg: %f, [", info->type().c_str(), opName.c_str(), i, std::get<0>(data), std::get<1>(data), std::get<2>(data));
             for (int v=0; v<ntensor->dimensions(); ++v) {
                 MNN_PRINT("%d", ntensor->length(v));
                 if (v!=ntensor->dimensions()-1) {

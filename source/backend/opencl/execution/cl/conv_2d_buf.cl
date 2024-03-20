@@ -22,308 +22,23 @@
         return;                                                     \
     }
 
-__kernel
-void conv_2d_c4h1w1(GLOBAL_SIZE_2_DIMS
-                      __global const FLOAT *input,
-                      __global const FLOAT *weight,
-                      __global const FLOAT *bias,
-                      __global FLOAT *output,
-                      __private const int2 in_hw,
-                      __private const int inChannel,
-                      __private const int in_c_blocks,
-                      __private const int2 out_hw,
-                      __private const int2 filter_hw,
-                      __private const int2 stride_hw,
-                      __private const int2 pad_hw,
-                      __private const int2 dilate_hw,
-                      __private const int out_w_blocks,
-                      __private const int out_c_blocks,
-                      __private const int out_h_blocks) {
-    const int out_c_w_idx = get_global_id(0); //c/4 w
-    const int out_b_h_idx  = get_global_id(1); //b h
+#define MOD_NUM 15
 
-    DEAL_NON_UNIFORM_DIM2(out_c_w_idx, out_b_h_idx);
-
-    const int out_c_idx = out_c_w_idx / out_hw.y;
-    const int out_w_idx = out_c_w_idx % out_hw.y;
-    const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
-    const int out_h_idx = out_b_h_idx % out_hw.x;
-    
-    FLOAT4 out0 = vload4(out_c_idx, bias);
-    
-    const int in_w_idx_base = mad24(out_w_idx, stride_hw.y, -pad_hw.y);
-    const int in_h_idx_base = mad24(out_h_idx, stride_hw.x, -pad_hw.x);
-    
-    const int kw_start = select(0, (-in_w_idx_base + dilate_hw.y - 1) / dilate_hw.y, in_w_idx_base < 0);
-    const int kh_start = select(0, (-in_h_idx_base + dilate_hw.x - 1) / dilate_hw.x, in_h_idx_base < 0);
-
-    const int in_w_idx_start = mad24(kw_start, dilate_hw.y, in_w_idx_base);
-    const int in_w_idx_end = min(mad24(filter_hw.y, dilate_hw.y, in_w_idx_base), in_hw.y);
-    
-    const int in_h_idx_start = mad24(kh_start, dilate_hw.x, in_h_idx_base);
-    const int in_h_idx_end = min(mad24(filter_hw.x, dilate_hw.x, in_h_idx_base), in_hw.x);
-    
-    const int weight_oc_offset = out_c_blocks * filter_hw.x * filter_hw.y * 4;
-    for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
-        //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
-        //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
-        int weight_offset = ((((4*in_c_idx+0)* out_c_blocks + out_c_idx) *filter_hw.x + kh_start)*filter_hw.y + kw_start) * 4;
-        for(int iy = in_h_idx_start; iy < in_h_idx_end; iy += dilate_hw.x) {
-            for(int ix = in_w_idx_start; ix < in_w_idx_end; ix += dilate_hw.y) {
-                int inp_offset = (((out_b_idx * in_c_blocks + in_c_idx) * in_hw.x + iy) * in_hw.y + ix) * 4;
-                FLOAT4 in0 = vload4(0, input+inp_offset);
-                
-                const int filter_w_inc = (ix-in_w_idx_start)/dilate_hw.y;
-                FLOAT4 weight0 = vload4(filter_w_inc, weight+weight_offset);
-                FLOAT4 weight1 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset);
-                FLOAT4 weight2 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset*2);
-                FLOAT4 weight3 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset*3);
-                
-                out0 = mad(in0.x, weight0, out0);
-                out0 = mad(in0.y, weight1, out0);
-                out0 = mad(in0.z, weight2, out0);
-                out0 = mad(in0.w, weight3, out0);
-                
-            }
-            weight_offset += 4*filter_hw.y;
-        }
-    }
-#ifdef RELU
-    out0 = fmax(out0, (FLOAT4)0);
-#endif
-
-#ifdef RELU6
-    out0 = clamp(out0, (FLOAT4)0, (FLOAT4)6);
-#endif
-
-    const int out_offset = (((out_b_idx*out_c_blocks + out_c_idx)*out_hw.x + out_h_idx)*out_hw.y + out_w_idx)*4;
-    vstore4(out0, 0, output+out_offset);
- 
-}
-
-__kernel
-void conv_2d_c4h1w2(GLOBAL_SIZE_2_DIMS
-                      __global const FLOAT *input,
-                      __global const FLOAT *weight,
-                      __global const FLOAT *bias,
-                      __global FLOAT *output,
-                      __private const int2 in_hw,
-                      __private const int inChannel,
-                      __private const int in_c_blocks,
-                      __private const int2 out_hw,
-                      __private const int2 filter_hw,
-                      __private const int2 stride_hw,
-                      __private const int2 pad_hw,
-                      __private const int2 dilate_hw,
-                      __private const int out_w_blocks,//generate width's num
-                      __private const int out_c_blocks,
-                      __private const int out_h_blocks) {
-    const int out_c_w_idx = get_global_id(0); //c/4 w
-    const int out_b_h_idx  = get_global_id(1); //b h
-
-    DEAL_NON_UNIFORM_DIM2(out_c_w_idx, out_b_h_idx);
-
-    const int out_c_idx = out_c_w_idx / out_w_blocks;
-    const int out_w_idx = (out_c_w_idx % out_w_blocks) << 1;
-    const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
-    const int out_h_idx = out_b_h_idx % out_hw.x;
-    
-    FLOAT4 out0 = vload4(out_c_idx, bias);
-    FLOAT4 out1 = out0;
-    
-    const int in_w0_idx_base = mad24(out_w_idx, stride_hw.y, -pad_hw.y);
-    const int in_w1_idx_base = in_w0_idx_base + stride_hw.y;
-
-    const int in_h_idx_base = mad24(out_h_idx, stride_hw.x, -pad_hw.x);
-    
-    const int kh_start = select(0, (-in_h_idx_base + dilate_hw.x - 1) / dilate_hw.x, in_h_idx_base < 0);
-    const int in_h_idx_start = mad24(kh_start, dilate_hw.x, in_h_idx_base);
-    const int in_h_idx_end = min(mad24(filter_hw.x, dilate_hw.x, in_h_idx_base), in_hw.x);
-    
-    const int weight_oc_offset = out_c_blocks * filter_hw.x * filter_hw.y * 4;
-    for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
-        //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
-        //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
-        int weight_offset = ((((4*in_c_idx+0)* out_c_blocks + out_c_idx) *filter_hw.x + kh_start)*filter_hw.y + 0) * 4;
-
-        for(int iy = in_h_idx_start; iy < in_h_idx_end; iy += dilate_hw.x) {
-            const int inp_offset_base = (((out_b_idx * in_c_blocks + in_c_idx) * in_hw.x + iy) * in_hw.y + 0) * 4;
-
-            for(int fw = 0; fw < filter_hw.y; fw++) {
-                const int in_w0_idx = fw * dilate_hw.y + in_w0_idx_base;
-                const int in_w1_idx = fw * dilate_hw.y + in_w1_idx_base;
-
-                FLOAT4 in0 = (in_w0_idx < 0 || in_w0_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w0_idx, input+inp_offset_base);
-                FLOAT4 in1 = (in_w1_idx < 0 || in_w1_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w1_idx, input+inp_offset_base);
-                
-                FLOAT4 weight0 = vload4(0, weight+weight_offset);
-                FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_oc_offset);
-                FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
-                FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
-                
-                out0 = mad(in0.x, weight0, out0);
-                out0 = mad(in0.y, weight1, out0);
-                out0 = mad(in0.z, weight2, out0);
-                out0 = mad(in0.w, weight3, out0);
-                
-                out1 = mad(in1.x, weight0, out1);
-                out1 = mad(in1.y, weight1, out1);
-                out1 = mad(in1.z, weight2, out1);
-                out1 = mad(in1.w, weight3, out1);
-                
-                weight_offset += 4;
-            }
-        }
-    }
-#ifdef RELU
-    out0 = fmax(out0, (FLOAT4)0);
-    out1 = fmax(out1, (FLOAT4)0);
-#endif
-
-#ifdef RELU6
-    out0 = clamp(out0, (FLOAT4)0, (FLOAT4)6);
-    out1 = clamp(out1, (FLOAT4)0, (FLOAT4)6);
-#endif
-
-    const int out_offset = (((out_b_idx*out_c_blocks + out_c_idx)*out_hw.x + out_h_idx)*out_hw.y + out_w_idx)*4;
-#ifdef BLOCK_LEAVE
-    vstore4(out0, 0, output+out_offset);
-    if(out_w_idx + 1 >= out_hw.y) return;
-    vstore4(out1, 1, output+out_offset);
-#else
-    vstore8((FLOAT8)(out0, out1), 0, output+out_offset);
-#endif
-}
-
-__kernel
-void conv_2d_c4h1w4(GLOBAL_SIZE_2_DIMS
-                      __global const FLOAT *input,
-                      __global const FLOAT *weight,
-                      __global const FLOAT *bias,
-                      __global FLOAT *output,
-                      __private const int2 in_hw,
-                      __private const int inChannel,
-                      __private const int in_c_blocks,
-                      __private const int2 out_hw,
-                      __private const int2 filter_hw,
-                      __private const int2 stride_hw,
-                      __private const int2 pad_hw,
-                      __private const int2 dilate_hw,
-                      __private const int out_w_blocks,
-                      __private const int out_c_blocks,
-                      __private const int out_h_blocks) {
-    const int out_c_w_idx = get_global_id(0); //c/4 w
-    const int out_b_h_idx  = get_global_id(1); //b h
-
-    DEAL_NON_UNIFORM_DIM2(out_c_w_idx, out_b_h_idx);
-
-    const int out_c_idx = out_c_w_idx / out_w_blocks;
-    const int out_w_idx = (out_c_w_idx % out_w_blocks) << 2;
-    const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
-    const int out_h_idx = out_b_h_idx % out_hw.x;
-    
-    FLOAT4 out0 = vload4(out_c_idx, bias);
-    FLOAT4 out1 = out0;
-    FLOAT4 out2 = out0;
-    FLOAT4 out3 = out0;
-
-    const int in_w0_idx_base = mad24(out_w_idx, stride_hw.y, -pad_hw.y);
-    const int in_w1_idx_base = in_w0_idx_base + stride_hw.y;
-    const int in_w2_idx_base = in_w1_idx_base + stride_hw.y;
-    const int in_w3_idx_base = in_w2_idx_base + stride_hw.y;
-
-    const int in_h_idx_base = mad24(out_h_idx, stride_hw.x, -pad_hw.x);
-    
-    const int kh_start = select(0, (-in_h_idx_base + dilate_hw.x - 1) / dilate_hw.x, in_h_idx_base < 0);
-    const int in_h_idx_start = mad24(kh_start, dilate_hw.x, in_h_idx_base);
-    const int in_h_idx_end = min(mad24(filter_hw.x, dilate_hw.x, in_h_idx_base), in_hw.x);
-    
-    const int weight_oc_offset = out_c_blocks * filter_hw.x * filter_hw.y * 4;
-    for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
-        //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
-        //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
-        int weight_offset = ((((4*in_c_idx+0)* out_c_blocks + out_c_idx) *filter_hw.x + kh_start)*filter_hw.y + 0) * 4;
-
-        for(int iy = in_h_idx_start; iy < in_h_idx_end; iy += dilate_hw.x) {
-            const int inp_offset_base = (((out_b_idx * in_c_blocks + in_c_idx) * in_hw.x + iy) * in_hw.y + 0) * 4;
-
-            for(int fw = 0; fw < filter_hw.y; fw++) {
-                const int in_w0_idx = fw * dilate_hw.y + in_w0_idx_base;
-                const int in_w1_idx = fw * dilate_hw.y + in_w1_idx_base;
-                const int in_w2_idx = fw * dilate_hw.y + in_w2_idx_base;
-                const int in_w3_idx = fw * dilate_hw.y + in_w3_idx_base;
-
-                FLOAT4 in0 = (in_w0_idx < 0 || in_w0_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w0_idx, input+inp_offset_base);
-                FLOAT4 in1 = (in_w1_idx < 0 || in_w1_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w1_idx, input+inp_offset_base);
-                FLOAT4 in2 = (in_w2_idx < 0 || in_w2_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w2_idx, input+inp_offset_base);
-                FLOAT4 in3 = (in_w3_idx < 0 || in_w3_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w3_idx, input+inp_offset_base);
-
-                FLOAT4 weight0 = vload4(0, weight+weight_offset);
-                FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_oc_offset);
-                FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
-                FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
-                
-                out0 = mad(in0.x, weight0, out0);
-                out0 = mad(in0.y, weight1, out0);
-                out0 = mad(in0.z, weight2, out0);
-                out0 = mad(in0.w, weight3, out0);
-                
-                out1 = mad(in1.x, weight0, out1);
-                out1 = mad(in1.y, weight1, out1);
-                out1 = mad(in1.z, weight2, out1);
-                out1 = mad(in1.w, weight3, out1);
-                
-                out2 = mad(in2.x, weight0, out2);
-                out2 = mad(in2.y, weight1, out2);
-                out2 = mad(in2.z, weight2, out2);
-                out2 = mad(in2.w, weight3, out2);
-                
-                out3 = mad(in3.x, weight0, out3);
-                out3 = mad(in3.y, weight1, out3);
-                out3 = mad(in3.z, weight2, out3);
-                out3 = mad(in3.w, weight3, out3);
-                
-                weight_offset += 4;
-            }
-        }
-    }
-#ifdef RELU
-    out0 = fmax(out0, (FLOAT4)0);
-    out1 = fmax(out1, (FLOAT4)0);
-    out2 = fmax(out2, (FLOAT4)0);
-    out3 = fmax(out3, (FLOAT4)0);
-#endif
-
-#ifdef RELU6
-    out0 = clamp(out0, (FLOAT4)0, (FLOAT4)6);
-    out1 = clamp(out1, (FLOAT4)0, (FLOAT4)6);
-    out2 = clamp(out2, (FLOAT4)0, (FLOAT4)6);
-    out3 = clamp(out3, (FLOAT4)0, (FLOAT4)6);
-#endif
-
-    const int out_offset = (((out_b_idx*out_c_blocks + out_c_idx)*out_hw.x + out_h_idx)*out_hw.y + out_w_idx)*4;
-#ifdef BLOCK_LEAVE
-    const int remain = out_hw.y - out_w_idx;
-
-    if (remain >= 4) {
-        vstore16((FLOAT16)(out0, out1, out2, out3), 0, output+out_offset);
-    }else if(remain == 3){
-        vstore8((FLOAT8)(out0, out1), 0, output+out_offset);
-        vstore4(out2, 2, output+out_offset);
-    }else if(remain == 2){
-        vstore8((FLOAT8)(out0, out1), 0, output+out_offset);
-    }else if(remain == 1){
-        vstore4(out0, 0, output+out_offset);
-    }
-#else
-    vstore16((FLOAT16)(out0, out1, out2, out3), 0, output+out_offset);
-#endif
-}
 
 __kernel
 void conv_2d_1x1_c4h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
                           __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                          __global const char *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                          __global const uchar *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#else
                           __global const FLOAT *kernel_ptr,
+#endif
                           __global const FLOAT *bias_ptr,
                           __global FLOAT *output,
                           __private const int in_c_block,
@@ -338,12 +53,24 @@ void conv_2d_1x1_c4h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
 
     const int out_c_idx = out_c_w_idx / out_w_blocks;
     const int out_w_idx = out_c_w_idx % out_w_blocks;
-    const int out_b_idx = out_b_h_idx / out_h;//equal to in_b_idx
-    const int out_h_idx = out_b_h_idx % out_h;//equal to in_h_idx
-    
+    const int out_b_idx = out_b_h_idx / out_h; // equal to in_b_idx
+    const int out_h_idx = out_b_h_idx % out_h; // equal to in_h_idx
+
+#if (defined USE_LOW_BIT_WEIGHT_INT4)
+    int weight_offset = out_c_idx * 8;
+    int weight_oc_offset = out_c_block * 8;
+#else
+    int weight_offset = out_c_idx * 16;
+    int weight_oc_offset = out_c_block * 16;
+#endif
+
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
+
     const int out_w4_idx = mul24(out_w_idx, 4);
     FLOAT4 out0 = vload4(out_c_idx, (__global FLOAT *)bias_ptr);
-    
     FLOAT4 out1 = out0;
     FLOAT4 out2 = out0;
     FLOAT4 out3 = out0;
@@ -351,22 +78,76 @@ void conv_2d_1x1_c4h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
     const int intput_width_idx0 = out_w4_idx;
     
     int offset = mul24(out_c_idx, in_c_block) << 2;
-    int inp_offset =
-    (((out_b_idx*in_c_block)*out_h + out_h_idx)* out_w + intput_width_idx0) << 2;
+    int inp_offset = (((out_b_idx*in_c_block)*out_h + out_h_idx)* out_w + intput_width_idx0) << 2;
     
     const int inp_add = out_h*out_w*4;
     for (ushort in_channel_block_idx = 0; in_channel_block_idx < in_c_block; ++in_channel_block_idx) {
 
         FLOAT4 in0 = vload4(0, input+inp_offset);
-        FLOAT4 in1 = vload4(1, input+inp_offset);;
-        FLOAT4 in2 = vload4(2, input+inp_offset);;
-        FLOAT4 in3 = vload4(3, input+inp_offset);;
+        FLOAT4 in1 = vload4(1, input+inp_offset);
+        FLOAT4 in2 = vload4(2, input+inp_offset);
+        FLOAT4 in3 = vload4(3, input+inp_offset);
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+        FLOAT16 weights = CONVERT_FLOAT16(vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT4 weights0 = CONVERT_FLOAT4(weights.s0123) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights1 = CONVERT_FLOAT4(weights.s4567) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights2 = CONVERT_FLOAT4(weights.s89ab) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights3 = CONVERT_FLOAT4(weights.scdef) * dequantScaleC4 + dequantOffsetC4;
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+        uchar8 charWeightsInt4 = vload8(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset);
+        char4 charWeights0 = (char4)(0, 0, 0, 0);
+        char4 charWeights1 = (char4)(0, 0, 0, 0);
+        char4 charWeights2 = (char4)(0, 0, 0, 0);
+        char4 charWeights3 = (char4)(0, 0, 0, 0);
+        charWeights0.x = (charWeightsInt4.s0 >> 4) - 8;
+        charWeights0.y = (charWeightsInt4.s0 & MOD_NUM) - 8;
+        charWeights0.z = (charWeightsInt4.s1 >> 4) - 8;
+        charWeights0.w = (charWeightsInt4.s1 & MOD_NUM) - 8;
+        charWeights1.x = (charWeightsInt4.s2 >> 4) - 8;
+        charWeights1.y = (charWeightsInt4.s2 & MOD_NUM) - 8;
+        charWeights1.z = (charWeightsInt4.s3 >> 4) - 8;
+        charWeights1.w = (charWeightsInt4.s3 & MOD_NUM)- 8;
+        charWeights2.x = (charWeightsInt4.s4 >> 4) - 8;
+        charWeights2.y = (charWeightsInt4.s4 & MOD_NUM) - 8;
+        charWeights2.z = (charWeightsInt4.s5 >> 4) - 8;
+        charWeights2.w = (charWeightsInt4.s5 & MOD_NUM) - 8;
+        charWeights3.x = (charWeightsInt4.s6 >> 4) - 8;
+        charWeights3.y = (charWeightsInt4.s6 & MOD_NUM) - 8;
+        charWeights3.z = (charWeightsInt4.s7 >> 4) - 8;
+        charWeights3.w = (charWeightsInt4.s7 & MOD_NUM) - 8;
+        FLOAT4 weights0 = CONVERT_FLOAT4(charWeights0) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights1 = CONVERT_FLOAT4(charWeights1) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights2 = CONVERT_FLOAT4(charWeights2) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights3 = CONVERT_FLOAT4(charWeights3) * dequantScaleC4 + dequantOffsetC4;
+#else
         FLOAT4 weights0 = vload4(offset, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights1 = vload4(offset + 1, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights2 = vload4(offset + 2, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights3 = vload4(offset + 3, (__global FLOAT *)kernel_ptr);
+#endif
+
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+        out0 = mad((FLOAT4)in0.x, weights0, out0);
+        out0 = mad((FLOAT4)in0.y, weights1, out0);
+        out0 = mad((FLOAT4)in0.z, weights2, out0);
+        out0 = mad((FLOAT4)in0.w, weights3, out0);
         
+        out1 = mad((FLOAT4)in1.x, weights0, out1);
+        out1 = mad((FLOAT4)in1.y, weights1, out1);
+        out1 = mad((FLOAT4)in1.z, weights2, out1);
+        out1 = mad((FLOAT4)in1.w, weights3, out1);
+        
+        out2 = mad((FLOAT4)in2.x, weights0, out2);
+        out2 = mad((FLOAT4)in2.y, weights1, out2);
+        out2 = mad((FLOAT4)in2.z, weights2, out2);
+        out2 = mad((FLOAT4)in2.w, weights3, out2);
+        
+        out3 = mad((FLOAT4)in3.x, weights0, out3);
+        out3 = mad((FLOAT4)in3.y, weights1, out3);
+        out3 = mad((FLOAT4)in3.z, weights2, out3);
+        out3 = mad((FLOAT4)in3.w, weights3, out3);
+#else
         out0.x += dot(weights0, in0);
         out0.y += dot(weights1, in0);
         out0.z += dot(weights2, in0);
@@ -386,6 +167,7 @@ void conv_2d_1x1_c4h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         out3.y += dot(weights1, in3);
         out3.z += dot(weights2, in3);
         out3.w += dot(weights3, in3);
+#endif
         
         offset += 4;
         inp_offset += inp_add;
@@ -424,11 +206,20 @@ void conv_2d_1x1_c4h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
 }
 
 
-
 __kernel
 void conv_2d_1x1_c8h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
                           __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                          __global const char *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                          __global const uchar *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#else
                           __global const FLOAT *kernel_ptr,
+#endif
                           __global const FLOAT *bias_ptr,
                           __global FLOAT *output,
                           __private const int in_c_block,
@@ -445,7 +236,22 @@ void conv_2d_1x1_c8h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
     const int out_w_idx = out_c_w_idx % out_w_blocks;
     const int out_b_idx = out_b_h_idx / out_h;//equal to in_b_idx
     const int out_h_idx = out_b_h_idx % out_h;//equal to in_h_idx
+
+#if (defined USE_LOW_BIT_WEIGHT_INT4)
+    int weight_offset = out_c_idx * 16;
+    int weight_oc_offset = out_c_block * 8;
+#else
+    int weight_offset = out_c_idx * 32;
+    int weight_oc_offset = out_c_block * 16;
+#endif
     
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC03 = vload4(out_c_idx << 1, dequantScale);
+    const FLOAT4 dequantOffsetC03 = vload4(out_c_idx << 1, dequantOffset);
+    const FLOAT4 dequantScaleC47 = vload4((out_c_idx << 1) + 1, dequantScale);
+    const FLOAT4 dequantOffsetC47 = vload4((out_c_idx << 1) + 1, dequantOffset);
+#endif
+
     const int out_w4_idx = mul24(out_w_idx, 4);
     FLOAT4 out0 = vload4(out_c_idx<<1, (__global FLOAT *)bias_ptr);
     FLOAT4 out1 = out0;
@@ -471,6 +277,68 @@ void conv_2d_1x1_c8h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         FLOAT4 in2 = vload4(2, input+inp_offset);;
         FLOAT4 in3 = vload4(3, input+inp_offset);;
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+        FLOAT16 weightsInt80 = CONVERT_FLOAT16(vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT16 weightsInt81 = CONVERT_FLOAT16(vload16(0, kernel_ptr + 16 + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT4 weights0 = CONVERT_FLOAT4(weightsInt80.s0123) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights1 = CONVERT_FLOAT4(weightsInt80.s4567) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights2 = CONVERT_FLOAT4(weightsInt80.s89ab) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights3 = CONVERT_FLOAT4(weightsInt80.scdef) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights4 = CONVERT_FLOAT4(weightsInt81.s0123) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights5 = CONVERT_FLOAT4(weightsInt81.s4567) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights6 = CONVERT_FLOAT4(weightsInt81.s89ab) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights7 = CONVERT_FLOAT4(weightsInt81.scdef) * dequantScaleC47 + dequantOffsetC47;
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+        uchar16 charWeightsInt4 = vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset);
+        char4 charWeights0 = (char4)(0, 0, 0, 0);
+        char4 charWeights1 = (char4)(0, 0, 0, 0);
+        char4 charWeights2 = (char4)(0, 0, 0, 0);
+        char4 charWeights3 = (char4)(0, 0, 0, 0);
+        char4 charWeights4 = (char4)(0, 0, 0, 0);
+        char4 charWeights5 = (char4)(0, 0, 0, 0);
+        char4 charWeights6 = (char4)(0, 0, 0, 0);
+        char4 charWeights7 = (char4)(0, 0, 0, 0);
+        charWeights0.x = (charWeightsInt4.s0 >> 4) - 8;
+        charWeights0.y = (charWeightsInt4.s0 & MOD_NUM) - 8;
+        charWeights0.z = (charWeightsInt4.s1 >> 4) - 8;
+        charWeights0.w = (charWeightsInt4.s1 & MOD_NUM) - 8;
+        charWeights1.x = (charWeightsInt4.s2 >> 4) - 8;
+        charWeights1.y = (charWeightsInt4.s2 & MOD_NUM) - 8;
+        charWeights1.z = (charWeightsInt4.s3 >> 4) - 8;
+        charWeights1.w = (charWeightsInt4.s3 & MOD_NUM) - 8;
+        charWeights2.x = (charWeightsInt4.s4 >> 4) - 8;
+        charWeights2.y = (charWeightsInt4.s4 & MOD_NUM) - 8;
+        charWeights2.z = (charWeightsInt4.s5 >> 4) - 8;
+        charWeights2.w = (charWeightsInt4.s5 & MOD_NUM) - 8;
+        charWeights3.x = (charWeightsInt4.s6 >> 4) - 8;
+        charWeights3.y = (charWeightsInt4.s6 & MOD_NUM) - 8;
+        charWeights3.z = (charWeightsInt4.s7 >> 4) - 8;
+        charWeights3.w = (charWeightsInt4.s7 & MOD_NUM) - 8;
+        charWeights4.x = (charWeightsInt4.s8 >> 4) - 8;
+        charWeights4.y = (charWeightsInt4.s8 & MOD_NUM) - 8;
+        charWeights4.z = (charWeightsInt4.s9 >> 4) - 8;
+        charWeights4.w = (charWeightsInt4.s9 & MOD_NUM) - 8;
+        charWeights5.x = (charWeightsInt4.sa >> 4) - 8;
+        charWeights5.y = (charWeightsInt4.sa & MOD_NUM) - 8;
+        charWeights5.z = (charWeightsInt4.sb >> 4) - 8;
+        charWeights5.w = (charWeightsInt4.sb & MOD_NUM) - 8;
+        charWeights6.x = (charWeightsInt4.sc >> 4) - 8;
+        charWeights6.y = (charWeightsInt4.sc & MOD_NUM) - 8;
+        charWeights6.z = (charWeightsInt4.sd >> 4) - 8;
+        charWeights6.w = (charWeightsInt4.sd & MOD_NUM) - 8;
+        charWeights7.x = (charWeightsInt4.se >> 4) - 8;
+        charWeights7.y = (charWeightsInt4.se & MOD_NUM) - 8;
+        charWeights7.z = (charWeightsInt4.sf >> 4) - 8;
+        charWeights7.w = (charWeightsInt4.sf & MOD_NUM) - 8;
+        FLOAT4 weights0 = CONVERT_FLOAT4(charWeights0) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights1 = CONVERT_FLOAT4(charWeights1) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights2 = CONVERT_FLOAT4(charWeights2) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights3 = CONVERT_FLOAT4(charWeights3) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights4 = CONVERT_FLOAT4(charWeights4) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights5 = CONVERT_FLOAT4(charWeights5) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights6 = CONVERT_FLOAT4(charWeights6) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights7 = CONVERT_FLOAT4(charWeights7) * dequantScaleC47 + dequantOffsetC47;
+#else
         FLOAT4 weights0 = vload4(offset, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights1 = vload4(offset + 1, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights2 = vload4(offset + 2, (__global FLOAT *)kernel_ptr);
@@ -479,7 +347,48 @@ void conv_2d_1x1_c8h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         FLOAT4 weights5 = vload4(offset + 5, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights6 = vload4(offset + 6, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights7 = vload4(offset + 7, (__global FLOAT *)kernel_ptr);
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+        out0 = mad((FLOAT4)in0.x, weights0, out0);
+        out0 = mad((FLOAT4)in0.y, weights1, out0);
+        out0 = mad((FLOAT4)in0.z, weights2, out0);
+        out0 = mad((FLOAT4)in0.w, weights3, out0);
         
+        out1 = mad((FLOAT4)in1.x, weights0, out1);
+        out1 = mad((FLOAT4)in1.y, weights1, out1);
+        out1 = mad((FLOAT4)in1.z, weights2, out1);
+        out1 = mad((FLOAT4)in1.w, weights3, out1);
+        
+        out2 = mad((FLOAT4)in2.x, weights0, out2);
+        out2 = mad((FLOAT4)in2.y, weights1, out2);
+        out2 = mad((FLOAT4)in2.z, weights2, out2);
+        out2 = mad((FLOAT4)in2.w, weights3, out2);
+        
+        out3 = mad((FLOAT4)in3.x, weights0, out3);
+        out3 = mad((FLOAT4)in3.y, weights1, out3);
+        out3 = mad((FLOAT4)in3.z, weights2, out3);
+        out3 = mad((FLOAT4)in3.w, weights3, out3);
+        
+        out4 = mad((FLOAT4)in0.x, weights4, out4);
+        out4 = mad((FLOAT4)in0.y, weights5, out4);
+        out4 = mad((FLOAT4)in0.z, weights6, out4);
+        out4 = mad((FLOAT4)in0.w, weights7, out4);
+        
+        out5 = mad((FLOAT4)in1.x, weights4, out5);
+        out5 = mad((FLOAT4)in1.y, weights5, out5);
+        out5 = mad((FLOAT4)in1.z, weights6, out5);
+        out5 = mad((FLOAT4)in1.w, weights7, out5);
+        
+        out6 = mad((FLOAT4)in2.x, weights4, out6);
+        out6 = mad((FLOAT4)in2.y, weights5, out6);
+        out6 = mad((FLOAT4)in2.z, weights6, out6);
+        out6 = mad((FLOAT4)in2.w, weights7, out6);
+        
+        out7 = mad((FLOAT4)in3.x, weights4, out7);
+        out7 = mad((FLOAT4)in3.y, weights5, out7);
+        out7 = mad((FLOAT4)in3.z, weights6, out7);
+        out7 = mad((FLOAT4)in3.w, weights7, out7);
+#else
         out0.x += dot(weights0, in0);
         out0.y += dot(weights1, in0);
         out0.z += dot(weights2, in0);
@@ -519,6 +428,7 @@ void conv_2d_1x1_c8h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         out7.y += dot(weights5, in3);
         out7.z += dot(weights6, in3);
         out7.w += dot(weights7, in3);
+#endif
 
     }
 
@@ -593,13 +503,23 @@ void conv_2d_1x1_c8h1w4(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
 __kernel
 void conv_2d_1x1_c8h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
                           __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                          __global const char *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                          __global const uchar *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#else
                           __global const FLOAT *kernel_ptr,
+#endif
                           __global const FLOAT *bias_ptr,
                           __global FLOAT *output,
                           __private const int in_c_block,
                           __private const int out_h,
                           __private const int out_w,
-                          __private const int out_c_block) {
+                          __private const int out_c_block) { // oc / 4
 
     const int out_c_w_idx = get_global_id(0); //c/8 w/4
     const int out_b_h_idx  = get_global_id(1); //b h
@@ -610,6 +530,20 @@ void conv_2d_1x1_c8h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
     const int out_w_idx = out_c_w_idx % out_w_blocks;
     const int out_b_idx = out_b_h_idx / out_h;//equal to in_b_idx
     const int out_h_idx = out_b_h_idx % out_h;//equal to in_h_idx
+
+#if (defined USE_LOW_BIT_WEIGHT_INT4)
+    int weight_offset = out_c_idx * 16;
+    int weight_oc_offset = out_c_block * 8;
+#else
+    int weight_offset = out_c_idx * 32;
+    int weight_oc_offset = out_c_block * 16;
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC03 = vload4(out_c_idx << 1, (__global FLOAT *)dequantScale);
+    const FLOAT4 dequantOffsetC03 = vload4(out_c_idx << 1, (__global FLOAT *)dequantOffset);
+    const FLOAT4 dequantScaleC47 = vload4((out_c_idx << 1) + 1, (__global FLOAT *)dequantScale);
+    const FLOAT4 dequantOffsetC47 = vload4((out_c_idx << 1) + 1, (__global FLOAT *)dequantOffset);
+#endif
     
     const int out_w2_idx = mul24(out_w_idx, 2);
     FLOAT4 out0 = vload4(out_c_idx<<1, (__global FLOAT *)bias_ptr);
@@ -630,6 +564,68 @@ void conv_2d_1x1_c8h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         FLOAT4 in0 = vload4(0, input+inp_offset);
         FLOAT4 in1 = vload4(1, input+inp_offset);;
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+        FLOAT16 weightsInt80 = CONVERT_FLOAT16(vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT16 weightsInt81 = CONVERT_FLOAT16(vload16(0, kernel_ptr + 16 + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT4 weights0 = CONVERT_FLOAT4(weightsInt80.s0123) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights1 = CONVERT_FLOAT4(weightsInt80.s4567) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights2 = CONVERT_FLOAT4(weightsInt80.s89ab) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights3 = CONVERT_FLOAT4(weightsInt80.scdef) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights4 = CONVERT_FLOAT4(weightsInt81.s0123) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights5 = CONVERT_FLOAT4(weightsInt81.s4567) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights6 = CONVERT_FLOAT4(weightsInt81.s89ab) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights7 = CONVERT_FLOAT4(weightsInt81.scdef) * dequantScaleC47 + dequantOffsetC47;
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+        uchar16 charWeightsInt4 = vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset);
+        char4 charWeights0 = (char4)(0, 0, 0, 0);
+        char4 charWeights1 = (char4)(0, 0, 0, 0);
+        char4 charWeights2 = (char4)(0, 0, 0, 0);
+        char4 charWeights3 = (char4)(0, 0, 0, 0);
+        char4 charWeights4 = (char4)(0, 0, 0, 0);
+        char4 charWeights5 = (char4)(0, 0, 0, 0);
+        char4 charWeights6 = (char4)(0, 0, 0, 0);
+        char4 charWeights7 = (char4)(0, 0, 0, 0);
+        charWeights0.x = (charWeightsInt4.s0 >> 4) - 8;
+        charWeights0.y = (charWeightsInt4.s0 & MOD_NUM) - 8;
+        charWeights0.z = (charWeightsInt4.s1 >> 4) - 8;
+        charWeights0.w = (charWeightsInt4.s1 & MOD_NUM) - 8;
+        charWeights1.x = (charWeightsInt4.s2 >> 4) - 8;
+        charWeights1.y = (charWeightsInt4.s2 & MOD_NUM) - 8;
+        charWeights1.z = (charWeightsInt4.s3 >> 4) - 8;
+        charWeights1.w = (charWeightsInt4.s3 & MOD_NUM) - 8;
+        charWeights2.x = (charWeightsInt4.s4 >> 4) - 8;
+        charWeights2.y = (charWeightsInt4.s4 & MOD_NUM) - 8;
+        charWeights2.z = (charWeightsInt4.s5 >> 4) - 8;
+        charWeights2.w = (charWeightsInt4.s5 & MOD_NUM) - 8;
+        charWeights3.x = (charWeightsInt4.s6 >> 4) - 8;
+        charWeights3.y = (charWeightsInt4.s6 & MOD_NUM) - 8;
+        charWeights3.z = (charWeightsInt4.s7 >> 4) - 8;
+        charWeights3.w = (charWeightsInt4.s7 & MOD_NUM) - 8;
+        charWeights4.x = (charWeightsInt4.s8 >> 4) - 8;
+        charWeights4.y = (charWeightsInt4.s8 & MOD_NUM) - 8;
+        charWeights4.z = (charWeightsInt4.s9 >> 4) - 8;
+        charWeights4.w = (charWeightsInt4.s9 & MOD_NUM) - 8;
+        charWeights5.x = (charWeightsInt4.sa >> 4) - 8;
+        charWeights5.y = (charWeightsInt4.sa & MOD_NUM) - 8;
+        charWeights5.z = (charWeightsInt4.sb >> 4) - 8;
+        charWeights5.w = (charWeightsInt4.sb & MOD_NUM) - 8;
+        charWeights6.x = (charWeightsInt4.sc >> 4) - 8;
+        charWeights6.y = (charWeightsInt4.sc & MOD_NUM) - 8;
+        charWeights6.z = (charWeightsInt4.sd >> 4) - 8;
+        charWeights6.w = (charWeightsInt4.sd & MOD_NUM) - 8;
+        charWeights7.x = (charWeightsInt4.se >> 4) - 8;
+        charWeights7.y = (charWeightsInt4.se & MOD_NUM) - 8;
+        charWeights7.z = (charWeightsInt4.sf >> 4) - 8;
+        charWeights7.w = (charWeightsInt4.sf & MOD_NUM) - 8;
+        FLOAT4 weights0 = CONVERT_FLOAT4(charWeights0) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights1 = CONVERT_FLOAT4(charWeights1) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights2 = CONVERT_FLOAT4(charWeights2) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights3 = CONVERT_FLOAT4(charWeights3) * dequantScaleC03 + dequantOffsetC03;
+        FLOAT4 weights4 = CONVERT_FLOAT4(charWeights4) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights5 = CONVERT_FLOAT4(charWeights5) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights6 = CONVERT_FLOAT4(charWeights6) * dequantScaleC47 + dequantOffsetC47;
+        FLOAT4 weights7 = CONVERT_FLOAT4(charWeights7) * dequantScaleC47 + dequantOffsetC47;
+#else
         FLOAT4 weights0 = vload4(offset, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights1 = vload4(offset + 1, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights2 = vload4(offset + 2, (__global FLOAT *)kernel_ptr);
@@ -638,7 +634,28 @@ void conv_2d_1x1_c8h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         FLOAT4 weights5 = vload4(offset + 5, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights6 = vload4(offset + 6, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights7 = vload4(offset + 7, (__global FLOAT *)kernel_ptr);
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+        out0 = mad((FLOAT4)in0.x, weights0, out0);
+        out0 = mad((FLOAT4)in0.y, weights1, out0);
+        out0 = mad((FLOAT4)in0.z, weights2, out0);
+        out0 = mad((FLOAT4)in0.w, weights3, out0);
         
+        out1 = mad((FLOAT4)in1.x, weights0, out1);
+        out1 = mad((FLOAT4)in1.y, weights1, out1);
+        out1 = mad((FLOAT4)in1.z, weights2, out1);
+        out1 = mad((FLOAT4)in1.w, weights3, out1);
+        
+        out4 = mad((FLOAT4)in0.x, weights4, out4);
+        out4 = mad((FLOAT4)in0.y, weights5, out4);
+        out4 = mad((FLOAT4)in0.z, weights6, out4);
+        out4 = mad((FLOAT4)in0.w, weights7, out4);
+        
+        out5 = mad((FLOAT4)in1.x, weights4, out5);
+        out5 = mad((FLOAT4)in1.y, weights5, out5);
+        out5 = mad((FLOAT4)in1.z, weights6, out5);
+        out5 = mad((FLOAT4)in1.w, weights7, out5);
+#else
         out0.x += dot(weights0, in0);
         out0.y += dot(weights1, in0);
         out0.z += dot(weights2, in0);
@@ -658,6 +675,7 @@ void conv_2d_1x1_c8h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         out5.y += dot(weights5, in1);
         out5.z += dot(weights6, in1);
         out5.w += dot(weights7, in1);
+#endif
     }
 
 #ifdef RELU
@@ -713,7 +731,17 @@ void conv_2d_1x1_c8h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
 __kernel
 void conv_2d_1x1_c4h1w1(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
                           __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                          __global const char *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                          __global const uchar *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#else
                           __global const FLOAT *kernel_ptr,
+#endif
                           __global const FLOAT *bias_ptr,
                           __global FLOAT *output,
                           __private const int in_c_block,
@@ -730,7 +758,19 @@ void conv_2d_1x1_c4h1w1(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
     const int out_w_idx = out_c_w_idx % out_w;
     const int out_b_idx = out_b_h_idx / out_h;//equal to in_b_idx
     const int out_h_idx = out_b_h_idx % out_h;//equal to in_h_idx
-    
+
+#if (defined USE_LOW_BIT_WEIGHT_INT4)
+    int weight_offset = out_c_idx * 8;
+    int weight_oc_offset = out_c_block * 8;
+#else
+    int weight_offset = out_c_idx * 16;
+    int weight_oc_offset = out_c_block * 16;
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
+
     FLOAT4 out0 = vload4(out_c_idx, (__global FLOAT *)bias_ptr);
     const int intput_width_idx0 = out_w_idx;
     
@@ -743,15 +783,55 @@ void conv_2d_1x1_c4h1w1(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         
         FLOAT4 in0 = vload4(0, input+inp_offset);
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+        FLOAT16 weights = CONVERT_FLOAT16(vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT4 weights0 = CONVERT_FLOAT4(weights.s0123) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights1 = CONVERT_FLOAT4(weights.s4567) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights2 = CONVERT_FLOAT4(weights.s89ab) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights3 = CONVERT_FLOAT4(weights.scdef) * dequantScaleC4 + dequantOffsetC4;
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+        uchar8 charWeightsInt4 = vload8(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset);
+        char4 charWeights0 = (char4)(0, 0, 0, 0);
+        char4 charWeights1 = (char4)(0, 0, 0, 0);
+        char4 charWeights2 = (char4)(0, 0, 0, 0);
+        char4 charWeights3 = (char4)(0, 0, 0, 0);
+        charWeights0.x = (charWeightsInt4.s0 >> 4) - 8;
+        charWeights0.y = (charWeightsInt4.s0 & MOD_NUM) - 8;
+        charWeights0.z = (charWeightsInt4.s1 >> 4) - 8;
+        charWeights0.w = (charWeightsInt4.s1 & MOD_NUM) - 8;
+        charWeights1.x = (charWeightsInt4.s2 >> 4) - 8;
+        charWeights1.y = (charWeightsInt4.s2 & MOD_NUM) - 8;
+        charWeights1.z = (charWeightsInt4.s3 >> 4) - 8;
+        charWeights1.w = (charWeightsInt4.s3 & MOD_NUM)- 8;
+        charWeights2.x = (charWeightsInt4.s4 >> 4) - 8;
+        charWeights2.y = (charWeightsInt4.s4 & MOD_NUM) - 8;
+        charWeights2.z = (charWeightsInt4.s5 >> 4) - 8;
+        charWeights2.w = (charWeightsInt4.s5 & MOD_NUM) - 8;
+        charWeights3.x = (charWeightsInt4.s6 >> 4) - 8;
+        charWeights3.y = (charWeightsInt4.s6 & MOD_NUM) - 8;
+        charWeights3.z = (charWeightsInt4.s7 >> 4) - 8;
+        charWeights3.w = (charWeightsInt4.s7 & MOD_NUM) - 8;
+        FLOAT4 weights0 = CONVERT_FLOAT4(charWeights0) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights1 = CONVERT_FLOAT4(charWeights1) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights2 = CONVERT_FLOAT4(charWeights2) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights3 = CONVERT_FLOAT4(charWeights3) * dequantScaleC4 + dequantOffsetC4;
+#else
         FLOAT4 weights0 = vload4(offset, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights1 = vload4(offset + 1, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights2 = vload4(offset + 2, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights3 = vload4(offset + 3, (__global FLOAT *)kernel_ptr);
-        
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+        out0 = mad((FLOAT4)in0.x, weights0, out0);
+        out0 = mad((FLOAT4)in0.y, weights1, out0);
+        out0 = mad((FLOAT4)in0.z, weights2, out0);
+        out0 = mad((FLOAT4)in0.w, weights3, out0);
+#else
         out0.x += dot(weights0, in0);
         out0.y += dot(weights1, in0);
         out0.z += dot(weights2, in0);
         out0.w += dot(weights3, in0);
+#endif
     }
 
 #ifdef RELU
@@ -771,7 +851,17 @@ void conv_2d_1x1_c4h1w1(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
 __kernel
 void conv_2d_1x1_c4h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
                           __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                          __global const char *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                          __global const uchar *kernel_ptr,
+                          __global const FLOAT *dequantScale,
+                          __global const FLOAT *dequantOffset,
+#else
                           __global const FLOAT *kernel_ptr,
+#endif
                           __global const FLOAT *bias_ptr,
                           __global FLOAT *output,
                           __private const int in_c_block,
@@ -788,7 +878,18 @@ void conv_2d_1x1_c4h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
     const int out_w_idx = out_c_w_idx % out_w_blocks;
     const int out_b_idx = out_b_h_idx / out_h;//equal to in_b_idx
     const int out_h_idx = out_b_h_idx % out_h;//equal to in_h_idx
-    
+#if (defined USE_LOW_BIT_WEIGHT_INT4)
+    int weight_offset = out_c_idx * 8;
+    int weight_oc_offset = out_c_block * 8;
+#else
+    int weight_offset = out_c_idx * 16;
+    int weight_oc_offset = out_c_block * 16;
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
+
     const int out_w2_idx = mul24(out_w_idx, 2);
 
     FLOAT4 out0 = vload4(out_c_idx, (__global FLOAT *)bias_ptr);
@@ -806,11 +907,55 @@ void conv_2d_1x1_c4h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         FLOAT4 in0 = vload4(0, input+inp_offset);
         FLOAT4 in1 = vload4(1, input+inp_offset);;
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+        FLOAT16 weights = CONVERT_FLOAT16(vload16(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset));
+        FLOAT4 weights0 = CONVERT_FLOAT4(weights.s0123) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights1 = CONVERT_FLOAT4(weights.s4567) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights2 = CONVERT_FLOAT4(weights.s89ab) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights3 = CONVERT_FLOAT4(weights.scdef) * dequantScaleC4 + dequantOffsetC4;
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+        uchar8 charWeightsInt4 = vload8(0, kernel_ptr + weight_offset + in_channel_block_idx * weight_oc_offset);
+        char4 charWeights0 = (char4)(0, 0, 0, 0);
+        char4 charWeights1 = (char4)(0, 0, 0, 0);
+        char4 charWeights2 = (char4)(0, 0, 0, 0);
+        char4 charWeights3 = (char4)(0, 0, 0, 0);
+        charWeights0.x = (charWeightsInt4.s0 >> 4) - 8;
+        charWeights0.y = (charWeightsInt4.s0 & MOD_NUM) - 8;
+        charWeights0.z = (charWeightsInt4.s1 >> 4) - 8;
+        charWeights0.w = (charWeightsInt4.s1 & MOD_NUM) - 8;
+        charWeights1.x = (charWeightsInt4.s2 >> 4) - 8;
+        charWeights1.y = (charWeightsInt4.s2 & MOD_NUM) - 8;
+        charWeights1.z = (charWeightsInt4.s3 >> 4) - 8;
+        charWeights1.w = (charWeightsInt4.s3 & MOD_NUM)- 8;
+        charWeights2.x = (charWeightsInt4.s4 >> 4) - 8;
+        charWeights2.y = (charWeightsInt4.s4 & MOD_NUM) - 8;
+        charWeights2.z = (charWeightsInt4.s5 >> 4) - 8;
+        charWeights2.w = (charWeightsInt4.s5 & MOD_NUM) - 8;
+        charWeights3.x = (charWeightsInt4.s6 >> 4) - 8;
+        charWeights3.y = (charWeightsInt4.s6 & MOD_NUM) - 8;
+        charWeights3.z = (charWeightsInt4.s7 >> 4) - 8;
+        charWeights3.w = (charWeightsInt4.s7 & MOD_NUM) - 8;
+        FLOAT4 weights0 = CONVERT_FLOAT4(charWeights0) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights1 = CONVERT_FLOAT4(charWeights1) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights2 = CONVERT_FLOAT4(charWeights2) * dequantScaleC4 + dequantOffsetC4;
+        FLOAT4 weights3 = CONVERT_FLOAT4(charWeights3) * dequantScaleC4 + dequantOffsetC4;
+#else
         FLOAT4 weights0 = vload4(offset, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights1 = vload4(offset + 1, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights2 = vload4(offset + 2, (__global FLOAT *)kernel_ptr);
         FLOAT4 weights3 = vload4(offset + 3, (__global FLOAT *)kernel_ptr);
+#endif
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+        out0 = mad((FLOAT4)in0.x, weights0, out0);
+        out0 = mad((FLOAT4)in0.y, weights1, out0);
+        out0 = mad((FLOAT4)in0.z, weights2, out0);
+        out0 = mad((FLOAT4)in0.w, weights3, out0);
         
+        out1 = mad((FLOAT4)in1.x, weights0, out1);
+        out1 = mad((FLOAT4)in1.y, weights1, out1);
+        out1 = mad((FLOAT4)in1.z, weights2, out1);
+        out1 = mad((FLOAT4)in1.w, weights3, out1);
+#else
         out0.x += dot(weights0, in0);
         out0.y += dot(weights1, in0);
         out0.z += dot(weights2, in0);
@@ -820,6 +965,7 @@ void conv_2d_1x1_c4h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
         out1.y += dot(weights1, in1);
         out1.z += dot(weights2, in1);
         out1.w += dot(weights3, in1);
+#endif
     }
 
 #ifdef RELU
@@ -848,9 +994,480 @@ void conv_2d_1x1_c4h1w2(GLOBAL_SIZE_2_DIMS __private const int out_w_blocks,
 }
 
 __kernel
+void conv_2d_c4h1w1(GLOBAL_SIZE_2_DIMS
+                      __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
+                      __global const FLOAT *weight,
+#endif
+                      __global const FLOAT *bias,
+                      __global FLOAT *output,
+                      __private const int2 in_hw,
+                      __private const int inChannel,
+                      __private const int in_c_blocks,
+                      __private const int2 out_hw,
+                      __private const int2 filter_hw,
+                      __private const int2 stride_hw,
+                      __private const int2 pad_hw,
+                      __private const int2 dilate_hw,
+                      __private const int out_w_blocks,
+                      __private const int out_c_blocks,
+                      __private const int out_h_blocks) {
+    const int out_c_w_idx = get_global_id(0); //c/4 w
+    const int out_b_h_idx  = get_global_id(1); //b h
+
+    DEAL_NON_UNIFORM_DIM2(out_c_w_idx, out_b_h_idx);
+
+    const int out_c_idx = out_c_w_idx / out_hw.y;
+    const int out_w_idx = out_c_w_idx % out_hw.y;
+    const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
+    const int out_h_idx = out_b_h_idx % out_hw.x;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
+    
+    FLOAT4 out0 = vload4(out_c_idx, bias);
+    
+    const int in_w_idx_base = mad24(out_w_idx, stride_hw.y, -pad_hw.y);
+    const int in_h_idx_base = mad24(out_h_idx, stride_hw.x, -pad_hw.x);
+    
+    const int kw_start = select(0, (-in_w_idx_base + dilate_hw.y - 1) / dilate_hw.y, in_w_idx_base < 0);
+    const int kh_start = select(0, (-in_h_idx_base + dilate_hw.x - 1) / dilate_hw.x, in_h_idx_base < 0);
+
+    const int in_w_idx_start = mad24(kw_start, dilate_hw.y, in_w_idx_base);
+    const int in_w_idx_end = min(mad24(filter_hw.y, dilate_hw.y, in_w_idx_base), in_hw.y);
+    
+    const int in_h_idx_start = mad24(kh_start, dilate_hw.x, in_h_idx_base);
+    const int in_h_idx_end = min(mad24(filter_hw.x, dilate_hw.x, in_h_idx_base), in_hw.x);
+    
+    const int weight_oc_offset = out_c_blocks * filter_hw.x * filter_hw.y * 4;
+    for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
+        //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
+        //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
+        int weight_offset = ((((4*in_c_idx+0)* out_c_blocks + out_c_idx) *filter_hw.x + kh_start)*filter_hw.y + kw_start) * 4;
+        for(int iy = in_h_idx_start; iy < in_h_idx_end; iy += dilate_hw.x) {
+            for(int ix = in_w_idx_start; ix < in_w_idx_end; ix += dilate_hw.y) {
+                int inp_offset = (((out_b_idx * in_c_blocks + in_c_idx) * in_hw.x + iy) * in_hw.y + ix) * 4;
+                FLOAT4 in0 = vload4(0, input+inp_offset);
+                
+                const int filter_w_inc = (ix-in_w_idx_start)/dilate_hw.y;
+
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(filter_w_inc, weight+weight_offset);
+                char4 charWeight1 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset);
+                char4 charWeight2 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset*2);
+                char4 charWeight3 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(filter_w_inc, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(filter_w_inc, weight+weight_offset/2+weight_oc_offset/2);
+                uchar2 charWeightInt42 = vload2(filter_w_inc, weight+weight_offset/2+weight_oc_offset*2/2);
+                uchar2 charWeightInt43 = vload2(filter_w_inc, weight+weight_offset/2+weight_oc_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#else
+                FLOAT4 weight0 = vload4(filter_w_inc, weight+weight_offset);
+                FLOAT4 weight1 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset);
+                FLOAT4 weight2 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset*2);
+                FLOAT4 weight3 = vload4(filter_w_inc, weight+weight_offset+weight_oc_offset*3);
+#endif
+
+                out0 = mad(in0.x, weight0, out0);
+                out0 = mad(in0.y, weight1, out0);
+                out0 = mad(in0.z, weight2, out0);
+                out0 = mad(in0.w, weight3, out0);
+
+            }
+            weight_offset += 4*filter_hw.y;
+        }
+    }
+#ifdef RELU
+    out0 = fmax(out0, (FLOAT4)0);
+#endif
+
+#ifdef RELU6
+    out0 = clamp(out0, (FLOAT4)0, (FLOAT4)6);
+#endif
+
+    const int out_offset = (((out_b_idx*out_c_blocks + out_c_idx)*out_hw.x + out_h_idx)*out_hw.y + out_w_idx)*4;
+    vstore4(out0, 0, output+out_offset);
+ 
+}
+
+__kernel
+void conv_2d_c4h1w2(GLOBAL_SIZE_2_DIMS
+                      __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
+                      __global const FLOAT *weight,
+#endif
+                      __global const FLOAT *bias,
+                      __global FLOAT *output,
+                      __private const int2 in_hw,
+                      __private const int inChannel,
+                      __private const int in_c_blocks,
+                      __private const int2 out_hw,
+                      __private const int2 filter_hw,
+                      __private const int2 stride_hw,
+                      __private const int2 pad_hw,
+                      __private const int2 dilate_hw,
+                      __private const int out_w_blocks,//generate width's num
+                      __private const int out_c_blocks,
+                      __private const int out_h_blocks) {
+    const int out_c_w_idx = get_global_id(0); //c/4 w
+    const int out_b_h_idx  = get_global_id(1); //b h
+
+    DEAL_NON_UNIFORM_DIM2(out_c_w_idx, out_b_h_idx);
+
+    const int out_c_idx = out_c_w_idx / out_w_blocks;
+    const int out_w_idx = (out_c_w_idx % out_w_blocks) << 1;
+    const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
+    const int out_h_idx = out_b_h_idx % out_hw.x;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
+    
+    FLOAT4 out0 = vload4(out_c_idx, bias);
+    FLOAT4 out1 = out0;
+    
+    const int in_w0_idx_base = mad24(out_w_idx, stride_hw.y, -pad_hw.y);
+    const int in_w1_idx_base = in_w0_idx_base + stride_hw.y;
+
+    const int in_h_idx_base = mad24(out_h_idx, stride_hw.x, -pad_hw.x);
+    
+    const int kh_start = select(0, (-in_h_idx_base + dilate_hw.x - 1) / dilate_hw.x, in_h_idx_base < 0);
+    const int in_h_idx_start = mad24(kh_start, dilate_hw.x, in_h_idx_base);
+    const int in_h_idx_end = min(mad24(filter_hw.x, dilate_hw.x, in_h_idx_base), in_hw.x);
+    
+    const int weight_oc_offset = out_c_blocks * filter_hw.x * filter_hw.y * 4;
+    for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
+        //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
+        //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
+        int weight_offset = ((((4*in_c_idx+0)* out_c_blocks + out_c_idx) *filter_hw.x + kh_start)*filter_hw.y + 0) * 4;
+
+        for(int iy = in_h_idx_start; iy < in_h_idx_end; iy += dilate_hw.x) {
+            const int inp_offset_base = (((out_b_idx * in_c_blocks + in_c_idx) * in_hw.x + iy) * in_hw.y + 0) * 4;
+
+            for(int fw = 0; fw < filter_hw.y; fw++) {
+                const int in_w0_idx = fw * dilate_hw.y + in_w0_idx_base;
+                const int in_w1_idx = fw * dilate_hw.y + in_w1_idx_base;
+
+                FLOAT4 in0 = (in_w0_idx < 0 || in_w0_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w0_idx, input+inp_offset_base);
+                FLOAT4 in1 = (in_w1_idx < 0 || in_w1_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w1_idx, input+inp_offset_base);
+                
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(0, weight+weight_offset);
+                char4 charWeight1 = vload4(0, weight+weight_offset+weight_oc_offset);
+                char4 charWeight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
+                char4 charWeight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(0, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(0, weight+weight_offset/2+weight_oc_offset/2);
+                uchar2 charWeightInt42 = vload2(0, weight+weight_offset/2+weight_oc_offset*2/2);
+                uchar2 charWeightInt43 = vload2(0, weight+weight_offset/2+weight_oc_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#else
+                FLOAT4 weight0 = vload4(0, weight+weight_offset);
+                FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_oc_offset);
+                FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
+                FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
+#endif
+
+                out0 = mad(in0.x, weight0, out0);
+                out0 = mad(in0.y, weight1, out0);
+                out0 = mad(in0.z, weight2, out0);
+                out0 = mad(in0.w, weight3, out0);
+                
+                out1 = mad(in1.x, weight0, out1);
+                out1 = mad(in1.y, weight1, out1);
+                out1 = mad(in1.z, weight2, out1);
+                out1 = mad(in1.w, weight3, out1);
+                
+                weight_offset += 4;
+            }
+        }
+    }
+#ifdef RELU
+    out0 = fmax(out0, (FLOAT4)0);
+    out1 = fmax(out1, (FLOAT4)0);
+#endif
+
+#ifdef RELU6
+    out0 = clamp(out0, (FLOAT4)0, (FLOAT4)6);
+    out1 = clamp(out1, (FLOAT4)0, (FLOAT4)6);
+#endif
+
+    const int out_offset = (((out_b_idx*out_c_blocks + out_c_idx)*out_hw.x + out_h_idx)*out_hw.y + out_w_idx)*4;
+#ifdef BLOCK_LEAVE
+    vstore4(out0, 0, output+out_offset);
+    if(out_w_idx + 1 >= out_hw.y) return;
+    vstore4(out1, 1, output+out_offset);
+#else
+    vstore8((FLOAT8)(out0, out1), 0, output+out_offset);
+#endif
+}
+
+__kernel
+void conv_2d_c4h1w4(GLOBAL_SIZE_2_DIMS
+                      __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
+                      __global const FLOAT *weight,
+#endif
+                      __global const FLOAT *bias,
+                      __global FLOAT *output,
+                      __private const int2 in_hw,
+                      __private const int inChannel,
+                      __private const int in_c_blocks,
+                      __private const int2 out_hw,
+                      __private const int2 filter_hw,
+                      __private const int2 stride_hw,
+                      __private const int2 pad_hw,
+                      __private const int2 dilate_hw,
+                      __private const int out_w_blocks,
+                      __private const int out_c_blocks,
+                      __private const int out_h_blocks) {
+    const int out_c_w_idx = get_global_id(0); //c/4 w
+    const int out_b_h_idx  = get_global_id(1); //b h
+
+    DEAL_NON_UNIFORM_DIM2(out_c_w_idx, out_b_h_idx);
+
+    const int out_c_idx = out_c_w_idx / out_w_blocks;
+    const int out_w_idx = (out_c_w_idx % out_w_blocks) << 2;
+    const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
+    const int out_h_idx = out_b_h_idx % out_hw.x;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
+
+    FLOAT4 out0 = vload4(out_c_idx, bias);
+    FLOAT4 out1 = out0;
+    FLOAT4 out2 = out0;
+    FLOAT4 out3 = out0;
+
+    const int in_w0_idx_base = mad24(out_w_idx, stride_hw.y, -pad_hw.y);
+    const int in_w1_idx_base = in_w0_idx_base + stride_hw.y;
+    const int in_w2_idx_base = in_w1_idx_base + stride_hw.y;
+    const int in_w3_idx_base = in_w2_idx_base + stride_hw.y;
+
+    const int in_h_idx_base = mad24(out_h_idx, stride_hw.x, -pad_hw.x);
+    
+    const int kh_start = select(0, (-in_h_idx_base + dilate_hw.x - 1) / dilate_hw.x, in_h_idx_base < 0);
+    const int in_h_idx_start = mad24(kh_start, dilate_hw.x, in_h_idx_base);
+    const int in_h_idx_end = min(mad24(filter_hw.x, dilate_hw.x, in_h_idx_base), in_hw.x);
+    
+    const int weight_oc_offset = out_c_blocks * filter_hw.x * filter_hw.y * 4;
+    for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
+        //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
+        //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
+        int weight_offset = ((((4*in_c_idx+0)* out_c_blocks + out_c_idx) *filter_hw.x + kh_start)*filter_hw.y + 0) * 4;
+
+        for(int iy = in_h_idx_start; iy < in_h_idx_end; iy += dilate_hw.x) {
+            const int inp_offset_base = (((out_b_idx * in_c_blocks + in_c_idx) * in_hw.x + iy) * in_hw.y + 0) * 4;
+
+            for(int fw = 0; fw < filter_hw.y; fw++) {
+                const int in_w0_idx = fw * dilate_hw.y + in_w0_idx_base;
+                const int in_w1_idx = fw * dilate_hw.y + in_w1_idx_base;
+                const int in_w2_idx = fw * dilate_hw.y + in_w2_idx_base;
+                const int in_w3_idx = fw * dilate_hw.y + in_w3_idx_base;
+
+                FLOAT4 in0 = (in_w0_idx < 0 || in_w0_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w0_idx, input+inp_offset_base);
+                FLOAT4 in1 = (in_w1_idx < 0 || in_w1_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w1_idx, input+inp_offset_base);
+                FLOAT4 in2 = (in_w2_idx < 0 || in_w2_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w2_idx, input+inp_offset_base);
+                FLOAT4 in3 = (in_w3_idx < 0 || in_w3_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w3_idx, input+inp_offset_base);
+
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(0, weight+weight_offset);
+                char4 charWeight1 = vload4(0, weight+weight_offset+weight_oc_offset);
+                char4 charWeight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
+                char4 charWeight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(0, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(0, weight+weight_offset/2+weight_oc_offset/2);
+                uchar2 charWeightInt42 = vload2(0, weight+weight_offset/2+weight_oc_offset*2/2);
+                uchar2 charWeightInt43 = vload2(0, weight+weight_offset/2+weight_oc_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#else
+                FLOAT4 weight0 = vload4(0, weight+weight_offset);
+                FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_oc_offset);
+                FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
+                FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
+#endif
+
+                out0 = mad(in0.x, weight0, out0);
+                out0 = mad(in0.y, weight1, out0);
+                out0 = mad(in0.z, weight2, out0);
+                out0 = mad(in0.w, weight3, out0);
+                
+                out1 = mad(in1.x, weight0, out1);
+                out1 = mad(in1.y, weight1, out1);
+                out1 = mad(in1.z, weight2, out1);
+                out1 = mad(in1.w, weight3, out1);
+                
+                out2 = mad(in2.x, weight0, out2);
+                out2 = mad(in2.y, weight1, out2);
+                out2 = mad(in2.z, weight2, out2);
+                out2 = mad(in2.w, weight3, out2);
+                
+                out3 = mad(in3.x, weight0, out3);
+                out3 = mad(in3.y, weight1, out3);
+                out3 = mad(in3.z, weight2, out3);
+                out3 = mad(in3.w, weight3, out3);
+                
+                weight_offset += 4;
+            }
+        }
+    }
+#ifdef RELU
+    out0 = fmax(out0, (FLOAT4)0);
+    out1 = fmax(out1, (FLOAT4)0);
+    out2 = fmax(out2, (FLOAT4)0);
+    out3 = fmax(out3, (FLOAT4)0);
+#endif
+
+#ifdef RELU6
+    out0 = clamp(out0, (FLOAT4)0, (FLOAT4)6);
+    out1 = clamp(out1, (FLOAT4)0, (FLOAT4)6);
+    out2 = clamp(out2, (FLOAT4)0, (FLOAT4)6);
+    out3 = clamp(out3, (FLOAT4)0, (FLOAT4)6);
+#endif
+
+    const int out_offset = (((out_b_idx*out_c_blocks + out_c_idx)*out_hw.x + out_h_idx)*out_hw.y + out_w_idx)*4;
+#ifdef BLOCK_LEAVE
+    const int remain = out_hw.y - out_w_idx;
+
+    if (remain >= 4) {
+        vstore16((FLOAT16)(out0, out1, out2, out3), 0, output+out_offset);
+    }else if(remain == 3){
+        vstore8((FLOAT8)(out0, out1), 0, output+out_offset);
+        vstore4(out2, 2, output+out_offset);
+    }else if(remain == 2){
+        vstore8((FLOAT8)(out0, out1), 0, output+out_offset);
+    }else if(remain == 1){
+        vstore4(out0, 0, output+out_offset);
+    }
+#else
+    vstore16((FLOAT16)(out0, out1, out2, out3), 0, output+out_offset);
+#endif
+}
+
+__kernel
 void conv_2d_c4h4w1(GLOBAL_SIZE_2_DIMS
                       __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
                       __global const FLOAT *weight,
+#endif
                       __global const FLOAT *bias,
                       __global FLOAT *output,
                       __private const int2 in_hw,
@@ -873,6 +1490,10 @@ void conv_2d_c4h4w1(GLOBAL_SIZE_2_DIMS
     const int out_w_idx = out_c_w_idx % out_w_blocks;
     const int out_b_idx = out_b_h_idx / out_h_blocks;//equal to in_b_idx
     const int out_h_idx = (out_b_h_idx % out_h_blocks) << 2;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC4 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC4 = vload4(out_c_idx, dequantOffset);
+#endif
     
     FLOAT4 out0 = vload4(out_c_idx, bias);
     FLOAT4 out1 = out0;
@@ -910,11 +1531,50 @@ void conv_2d_c4h4w1(GLOBAL_SIZE_2_DIMS
                 FLOAT4 in2 = (in_h2_idx < 0 || in_h2_idx >= in_hw_size) ? (FLOAT4)0 : vload4(in_h2_idx + fw, input+inp_offset_base);
                 FLOAT4 in3 = (in_h3_idx < 0 || in_h3_idx >= in_hw_size) ? (FLOAT4)0 : vload4(in_h3_idx + fw, input+inp_offset_base);
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(0, weight+weight_offset);
+                char4 charWeight1 = vload4(0, weight+weight_offset+weight_oc_offset);
+                char4 charWeight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
+                char4 charWeight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(0, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(0, weight+weight_offset/2+weight_oc_offset/2);
+                uchar2 charWeightInt42 = vload2(0, weight+weight_offset/2+weight_oc_offset*2/2);
+                uchar2 charWeightInt43 = vload2(0, weight+weight_offset/2+weight_oc_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC4, dequantOffsetC4);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC4, dequantOffsetC4);
+#else
                 FLOAT4 weight0 = vload4(0, weight+weight_offset);
                 FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_oc_offset);
                 FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_oc_offset*2);
                 FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_oc_offset*3);
-                
+#endif
                 out0 = mad(in0.x, weight0, out0);
                 out0 = mad(in0.y, weight1, out0);
                 out0 = mad(in0.z, weight2, out0);
@@ -982,7 +1642,17 @@ void conv_2d_c4h4w1(GLOBAL_SIZE_2_DIMS
 __kernel
 void conv_2d_c8h4w1(GLOBAL_SIZE_2_DIMS
                       __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
                       __global const FLOAT *weight,
+#endif
                       __global const FLOAT *bias,
                       __global FLOAT *output,
                       __private const int2 in_hw,
@@ -1005,6 +1675,12 @@ void conv_2d_c8h4w1(GLOBAL_SIZE_2_DIMS
     const int out_w_idx = out_c_w_idx % out_w_blocks;
     const int out_b_idx = out_b_h_idx / out_h_blocks;//equal to in_b_idx
     const int out_h_idx = (out_b_h_idx % out_h_blocks) << 2;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC03 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC03 = vload4(out_c_idx, dequantOffset);
+    const FLOAT4 dequantScaleC47 = vload4(out_c_idx + 1, dequantScale);
+    const FLOAT4 dequantOffsetC47 = vload4(out_c_idx + 1, dequantOffset);
+#endif
     
     FLOAT4 out0 = vload4(out_c_idx, bias);
     FLOAT4 out1 = out0;
@@ -1047,10 +1723,50 @@ void conv_2d_c8h4w1(GLOBAL_SIZE_2_DIMS
                 FLOAT4 in2 = (in_h2_idx < 0 || in_h2_idx >= in_hw_size) ? (FLOAT4)0 : vload4(in_h2_idx + fw, input+inp_offset_base);
                 FLOAT4 in3 = (in_h3_idx < 0 || in_h3_idx >= in_hw_size) ? (FLOAT4)0 : vload4(in_h3_idx + fw, input+inp_offset_base);
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(0, weight+weight_offset);
+                char4 charWeight1 = vload4(0, weight+weight_offset+weight_ic_offset);
+                char4 charWeight2 = vload4(0, weight+weight_offset+weight_ic_offset*2);
+                char4 charWeight3 = vload4(0, weight+weight_offset+weight_ic_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC03, dequantOffsetC03);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(0, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(0, weight+weight_offset/2+weight_ic_offset/2);
+                uchar2 charWeightInt42 = vload2(0, weight+weight_offset/2+weight_ic_offset*2/2);
+                uchar2 charWeightInt43 = vload2(0, weight+weight_offset/2+weight_ic_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM)- 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC03, dequantOffsetC03);
+#else
                 FLOAT4 weight0 = vload4(0, weight+weight_offset);
                 FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_ic_offset);
                 FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_ic_offset*2);
                 FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_ic_offset*3);
+#endif
                 
                 out0 = mad(in0.x, weight0, out0);
                 out0 = mad(in0.y, weight1, out0);
@@ -1071,12 +1787,52 @@ void conv_2d_c8h4w1(GLOBAL_SIZE_2_DIMS
                 out3 = mad(in3.y, weight1, out3);
                 out3 = mad(in3.z, weight2, out3);
                 out3 = mad(in3.w, weight3, out3);
-                
+
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                charWeight0 = vload4(0, weight+weight_offset+weight_oc_offset);
+                charWeight1 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset);
+                charWeight2 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*2);
+                charWeight3 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*3);
+                weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC47, dequantOffsetC47);
+                weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC47, dequantOffsetC47);
+                weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC47, dequantOffsetC47);
+                weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC47, dequantOffsetC47);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                charWeightInt40 = vload2(0, weight+weight_offset/2+weight_oc_offset/2);
+                charWeightInt41 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset/2);
+                charWeightInt42 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset*2/2);
+                charWeightInt43 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset*3/2);
+                charWeight0 = (char4)(0, 0, 0, 0);
+                charWeight1 = (char4)(0, 0, 0, 0);
+                charWeight2 = (char4)(0, 0, 0, 0);
+                charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM)- 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM)- 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC47, dequantOffsetC47);
+                weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC47, dequantOffsetC47);
+                weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC47, dequantOffsetC47);
+                weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC47, dequantOffsetC47);
+#else
                 weight0 = vload4(0, weight+weight_offset+weight_oc_offset);
-                weight1 = vload4(0, weight+weight_offset+weight_ic_offset+weight_oc_offset);
-                weight2 = vload4(0, weight+weight_offset+weight_ic_offset*2+weight_oc_offset);
-                weight3 = vload4(0, weight+weight_offset+weight_ic_offset*3+weight_oc_offset);
-                
+                weight1 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset);
+                weight2 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*2);
+                weight3 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*3);
+#endif
+
                 out4 = mad(in0.x, weight0, out4);
                 out4 = mad(in0.y, weight1, out4);
                 out4 = mad(in0.z, weight2, out4);
@@ -1183,7 +1939,17 @@ void conv_2d_c8h4w1(GLOBAL_SIZE_2_DIMS
 __kernel
 void conv_2d_c8h2w1(GLOBAL_SIZE_2_DIMS
                       __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
                       __global const FLOAT *weight,
+#endif
                       __global const FLOAT *bias,
                       __global FLOAT *output,
                       __private const int2 in_hw,
@@ -1206,6 +1972,12 @@ void conv_2d_c8h2w1(GLOBAL_SIZE_2_DIMS
     const int out_w_idx = out_c_w_idx % out_w_blocks;
     const int out_b_idx = out_b_h_idx / out_h_blocks;//equal to in_b_idx
     const int out_h_idx = (out_b_h_idx % out_h_blocks) << 1;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC03 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC03 = vload4(out_c_idx, dequantOffset);
+    const FLOAT4 dequantScaleC47 = vload4(out_c_idx + 1, dequantScale);
+    const FLOAT4 dequantOffsetC47 = vload4(out_c_idx + 1, dequantOffset);
+#endif
     
     FLOAT4 out0 = vload4(out_c_idx, bias);
     FLOAT4 out1 = out0;
@@ -1224,6 +1996,7 @@ void conv_2d_c8h2w1(GLOBAL_SIZE_2_DIMS
     const int weight_oc_offset = filter_hw.x * filter_hw.y * 4;
     const int weight_ic_offset = out_c_blocks * weight_oc_offset;
     const int in_hw_size = in_hw.x * in_hw.y;
+    // weight: [ic/4, oc, 4], loop: ic/4
     for(ushort in_c_idx = 0; in_c_idx < in_c_blocks; in_c_idx++) {
         //weights  NC4HW4  [1,  4*icC4,  ocC4*kh*kw,  1] xic4
         //index:   [0, 4*in_c_idx, out_c_idx*kh*kw + kh_start*kw + kw_start, 0]
@@ -1237,12 +2010,50 @@ void conv_2d_c8h2w1(GLOBAL_SIZE_2_DIMS
             for(int fw = in_w_idx_start; fw < in_w_idx_end; fw += dilate_hw.y) {
                 FLOAT4 in0 = (in_h0_idx < 0 || in_h0_idx >= in_hw_size) ? (FLOAT4)0 : vload4(in_h0_idx + fw, input+inp_offset_base);
                 FLOAT4 in1 = (in_h1_idx < 0 || in_h1_idx >= in_hw_size) ? (FLOAT4)0 : vload4(in_h1_idx + fw, input+inp_offset_base);
-
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(0, weight+weight_offset);
+                char4 charWeight1 = vload4(0, weight+weight_offset+weight_ic_offset);
+                char4 charWeight2 = vload4(0, weight+weight_offset+weight_ic_offset*2);
+                char4 charWeight3 = vload4(0, weight+weight_offset+weight_ic_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC03, dequantOffsetC03);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(0, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(0, weight+weight_offset/2+weight_ic_offset/2);
+                uchar2 charWeightInt42 = vload2(0, weight+weight_offset/2+weight_ic_offset*2/2);
+                uchar2 charWeightInt43 = vload2(0, weight+weight_offset/2+weight_ic_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC03, dequantOffsetC03);
+#else
                 FLOAT4 weight0 = vload4(0, weight+weight_offset);
                 FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_ic_offset);
                 FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_ic_offset*2);
                 FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_ic_offset*3);
-                
+#endif
                 out0 = mad(in0.x, weight0, out0);
                 out0 = mad(in0.y, weight1, out0);
                 out0 = mad(in0.z, weight2, out0);
@@ -1253,11 +2064,50 @@ void conv_2d_c8h2w1(GLOBAL_SIZE_2_DIMS
                 out1 = mad(in1.z, weight2, out1);
                 out1 = mad(in1.w, weight3, out1);
                 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                charWeight0 = vload4(0, weight+weight_offset+weight_oc_offset);
+                charWeight1 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset);
+                charWeight2 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*2);
+                charWeight3 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*3);
+                weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC47, dequantOffsetC47);
+                weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC47, dequantOffsetC47);
+                weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC47, dequantOffsetC47);
+                weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC47, dequantOffsetC47);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                charWeightInt40 = vload2(0, weight+weight_offset/2+weight_oc_offset/2);
+                charWeightInt41 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset/2);
+                charWeightInt42 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset*2/2);
+                charWeightInt43 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset*3/2);
+                charWeight0 = (char4)(0, 0, 0, 0);
+                charWeight1 = (char4)(0, 0, 0, 0);
+                charWeight2 = (char4)(0, 0, 0, 0);
+                charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0& MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1& MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0& MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1& MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0& MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1& MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0& MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1& MOD_NUM) - 8;
+                weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC47, dequantOffsetC47);
+                weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC47, dequantOffsetC47);
+                weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC47, dequantOffsetC47);
+                weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC47, dequantOffsetC47);
+#else
                 weight0 = vload4(0, weight+weight_offset+weight_oc_offset);
-                weight1 = vload4(0, weight+weight_offset+weight_ic_offset+weight_oc_offset);
-                weight2 = vload4(0, weight+weight_offset+weight_ic_offset*2+weight_oc_offset);
-                weight3 = vload4(0, weight+weight_offset+weight_ic_offset*3+weight_oc_offset);
-                
+                weight1 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset);
+                weight2 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*2);
+                weight3 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*3);
+#endif                
                 out2 = mad(in0.x, weight0, out2);
                 out2 = mad(in0.y, weight1, out2);
                 out2 = mad(in0.z, weight2, out2);
@@ -1324,7 +2174,17 @@ void conv_2d_c8h2w1(GLOBAL_SIZE_2_DIMS
 __kernel
 void conv_2d_c8h1w4(GLOBAL_SIZE_2_DIMS
                       __global const FLOAT *input,
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                      __global const char *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                      __global const uchar *weight,
+                      __global const FLOAT *dequantScale,
+                      __global const FLOAT *dequantOffset,
+#else
                       __global const FLOAT *weight,
+#endif
                       __global const FLOAT *bias,
                       __global FLOAT *output,
                       __private const int2 in_hw,
@@ -1347,6 +2207,12 @@ void conv_2d_c8h1w4(GLOBAL_SIZE_2_DIMS
     const int out_w_idx = (out_c_w_idx % out_w_blocks) << 2;
     const int out_b_idx = out_b_h_idx / out_hw.x;//equal to in_b_idx
     const int out_h_idx = out_b_h_idx % out_hw.x;
+#if (defined USE_LOW_BIT_WEIGHT_INT8) || (defined USE_LOW_BIT_WEIGHT_INT4)
+    const FLOAT4 dequantScaleC03 = vload4(out_c_idx, dequantScale);
+    const FLOAT4 dequantOffsetC03 = vload4(out_c_idx, dequantOffset);
+    const FLOAT4 dequantScaleC47 = vload4(out_c_idx + 1, dequantScale);
+    const FLOAT4 dequantOffsetC47 = vload4(out_c_idx + 1, dequantOffset);
+#endif
     
     FLOAT4 out0 = vload4(out_c_idx, bias);
     FLOAT4 out1 = out0;
@@ -1390,11 +2256,51 @@ void conv_2d_c8h1w4(GLOBAL_SIZE_2_DIMS
                 FLOAT4 in2 = (in_w2_idx < 0 || in_w2_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w2_idx, input+inp_offset_base);
                 FLOAT4 in3 = (in_w3_idx < 0 || in_w3_idx >= in_hw.y) ? (FLOAT4)0 : vload4(in_w3_idx, input+inp_offset_base);
 
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                char4 charWeight0 = vload4(0, weight+weight_offset);
+                char4 charWeight1 = vload4(0, weight+weight_offset+weight_ic_offset);
+                char4 charWeight2 = vload4(0, weight+weight_offset+weight_ic_offset*2);
+                char4 charWeight3 = vload4(0, weight+weight_offset+weight_ic_offset*3);
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC03, dequantOffsetC03);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                uchar2 charWeightInt40 = vload2(0, weight+weight_offset/2);
+                uchar2 charWeightInt41 = vload2(0, weight+weight_offset/2+weight_ic_offset/2);
+                uchar2 charWeightInt42 = vload2(0, weight+weight_offset/2+weight_ic_offset*2/2);
+                uchar2 charWeightInt43 = vload2(0, weight+weight_offset/2+weight_ic_offset*3/2);
+                char4 charWeight0 = (char4)(0, 0, 0, 0);
+                char4 charWeight1 = (char4)(0, 0, 0, 0);
+                char4 charWeight2 = (char4)(0, 0, 0, 0);
+                char4 charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM) - 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                FLOAT4 weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC03, dequantOffsetC03);
+                FLOAT4 weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC03, dequantOffsetC03);
+#else
                 FLOAT4 weight0 = vload4(0, weight+weight_offset);
                 FLOAT4 weight1 = vload4(0, weight+weight_offset+weight_ic_offset);
                 FLOAT4 weight2 = vload4(0, weight+weight_offset+weight_ic_offset*2);
                 FLOAT4 weight3 = vload4(0, weight+weight_offset+weight_ic_offset*3);
-                
+#endif
+
                 out0 = mad(in0.x, weight0, out0);
                 out0 = mad(in0.y, weight1, out0);
                 out0 = mad(in0.z, weight2, out0);
@@ -1415,10 +2321,50 @@ void conv_2d_c8h1w4(GLOBAL_SIZE_2_DIMS
                 out3 = mad(in3.z, weight2, out3);
                 out3 = mad(in3.w, weight3, out3);
                 
-                weight0 = vload4(0, weight+weight_oc_offset+weight_offset);
-                weight1 = vload4(0, weight+weight_oc_offset+weight_offset+weight_ic_offset);
-                weight2 = vload4(0, weight+weight_oc_offset+weight_offset+weight_ic_offset*2);
-                weight3 = vload4(0, weight+weight_oc_offset+weight_offset+weight_ic_offset*3);
+#if (defined USE_LOW_BIT_WEIGHT_INT8)
+                charWeight0 = vload4(0, weight+weight_offset+weight_oc_offset);
+                charWeight1 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset);
+                charWeight2 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*2);
+                charWeight3 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*3);
+                weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC47, dequantOffsetC47);
+                weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC47, dequantOffsetC47);
+                weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC47, dequantOffsetC47);
+                weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC47, dequantOffsetC47);
+#elif (defined USE_LOW_BIT_WEIGHT_INT4)
+                charWeightInt40 = vload2(0, weight+weight_offset/2+weight_oc_offset/2);
+                charWeightInt41 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset/2);
+                charWeightInt42 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset*2/2);
+                charWeightInt43 = vload2(0, weight+weight_offset/2+weight_oc_offset/2+weight_ic_offset*3/2);
+                charWeight0 = (char4)(0, 0, 0, 0);
+                charWeight1 = (char4)(0, 0, 0, 0);
+                charWeight2 = (char4)(0, 0, 0, 0);
+                charWeight3 = (char4)(0, 0, 0, 0);
+                charWeight0.x = (charWeightInt40.s0 >> 4) - 8;
+                charWeight0.y = (charWeightInt40.s0 & MOD_NUM) - 8;
+                charWeight0.z = (charWeightInt40.s1 >> 4) - 8;
+                charWeight0.w = (charWeightInt40.s1 & MOD_NUM) - 8;
+                charWeight1.x = (charWeightInt41.s0 >> 4) - 8;
+                charWeight1.y = (charWeightInt41.s0 & MOD_NUM)- 8;
+                charWeight1.z = (charWeightInt41.s1 >> 4) - 8;
+                charWeight1.w = (charWeightInt41.s1 & MOD_NUM) - 8;
+                charWeight2.x = (charWeightInt42.s0 >> 4) - 8;
+                charWeight2.y = (charWeightInt42.s0 & MOD_NUM) - 8;
+                charWeight2.z = (charWeightInt42.s1 >> 4) - 8;
+                charWeight2.w = (charWeightInt42.s1 & MOD_NUM) - 8;
+                charWeight3.x = (charWeightInt43.s0 >> 4) - 8;
+                charWeight3.y = (charWeightInt43.s0 & MOD_NUM) - 8;
+                charWeight3.z = (charWeightInt43.s1 >> 4) - 8;
+                charWeight3.w = (charWeightInt43.s1 & MOD_NUM) - 8;
+                weight0 = mad(CONVERT_FLOAT4(charWeight0), dequantScaleC47, dequantOffsetC47);
+                weight1 = mad(CONVERT_FLOAT4(charWeight1), dequantScaleC47, dequantOffsetC47);
+                weight2 = mad(CONVERT_FLOAT4(charWeight2), dequantScaleC47, dequantOffsetC47);
+                weight3 = mad(CONVERT_FLOAT4(charWeight3), dequantScaleC47, dequantOffsetC47);
+#else
+                weight0 = vload4(0, weight+weight_offset+weight_oc_offset);
+                weight1 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset);
+                weight2 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*2);
+                weight3 = vload4(0, weight+weight_offset+weight_oc_offset+weight_ic_offset*3);
+#endif
                 
                 out4 = mad(in0.x, weight0, out4);
                 out4 = mad(in0.y, weight1, out4);

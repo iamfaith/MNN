@@ -18,6 +18,7 @@ struct CoreFunctions;
 class MNN_PUBLIC OpCommonUtils {
 #define USE_EXTERNAL_DATA(param) (param->external() && param->external()->size() > 1)
 public:
+    static Tensor::DimensionType convertDimType(MNN_DATA_FORMAT dimensionFormat);
     static void broastCastComputeDim(int* dims, int* stride, int* iStride0, int* iStride1, const Tensor* input0,
                                      const Tensor* input1, const Tensor* output);
     static std::vector<std::tuple<int, int, int>> computeReduceDims(const std::vector<Tensor*>& inputs, const Op* op);
@@ -36,7 +37,7 @@ public:
                             const SPLITS& dstSplits, int pack = 4, bool swapnc = false, bool swapcw = false);
     static void turnToPackRegion(const Tensor::InsideDescribe::Region& region, Tensor::InsideDescribe::Region& c4Region,
                                  const SPLITS& srcSplits, const SPLITS& dstSplits, int pack = 4, bool swapnc = false);
-    static bool opNeedContent(int type, int index);
+    static bool opNeedContent(const MNN::Op* op, int index);
 
     // For lowp CPU Backend
     static bool opCompabilityForLowp(const Op* op);
@@ -59,6 +60,7 @@ public:
     // Detect if the region is a transpose
     static bool isTranspose(const Tensor::InsideDescribe::Region& region, int& srcOne, int& dstOne);
 
+    static bool computeMatMulSize(bool transposeA, bool transposeB, const Tensor* A, const Tensor* B, int& e, int& l, int& h);
 };
 } // namespace MNN
 

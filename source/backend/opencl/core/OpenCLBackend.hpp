@@ -11,6 +11,7 @@
 
 #include "core/Backend.hpp"
 #include "MNN_generated.h"
+#include <MNN/ErrorCode.hpp>
 
 #include <list>
 #include <vector>
@@ -35,11 +36,12 @@ namespace OpenCL {
 struct TuneInfo;
 class CLRuntime : public Runtime {
 public:
-    CLRuntime(const Backend::Info& info, int platformSize, int platformId, int deviceId = 0);
+    CLRuntime(const Backend::Info& info, int platformSize, int platformId, int deviceId = 0, void *contextPtr = nullptr, void *glshared = nullptr);
     virtual ~CLRuntime();
 
     virtual Backend* onCreate(const BackendConfig* config) const override;
     virtual void onGabageCollect(int level) override;
+    virtual float onGetMemoryInMB() override;
     virtual std::pair<const void*, size_t> onGetCache() override;
     virtual bool onSetCache(const void* buffer, size_t size) override;
     bool isCLRuntimeError();
@@ -48,8 +50,8 @@ public:
                            const MNN::Op* op, OpInfo& dstInfo) const override;
     virtual void onMaskOpReady(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                const MNN::Op* op) override;
-    void convertToDevice(const Tensor* srcTensor, const Tensor* dstTensor, MNN_DATA_FORMAT data_format, bool svmFlag = false) const;
-    void convertFromDevice(const Tensor* srcTensor, const Tensor* dstTensor, MNN_DATA_FORMAT data_format, bool svmFlag = false) const;
+    void convertToDevice(const Tensor* srcTensor, const Tensor* dstTensor, MNN_DATA_FORMAT data_format, bool svmFlag = false, int memtype = MNN_FORWARD_CPU) const;
+    void convertFromDevice(const Tensor* srcTensor, const Tensor* dstTensor, MNN_DATA_FORMAT data_format, bool svmFlag = false, int memtype = MNN_FORWARD_CPU) const;
     void copyBetweenDevice(const Tensor* srcTensor, const Tensor* dstTensor) const;
 
 private:
@@ -58,6 +60,7 @@ private:
     std::shared_ptr<ImagePool> mImagePool;
     std::shared_ptr<BufferPool> mBufferPool;
     BackendConfig::PrecisionMode mPrecision;
+    BackendConfig::MemoryMode mMemory;
     bool mCLRuntimeError = false;
 
     friend class OpenCLBackend;
@@ -102,7 +105,7 @@ public:
                                 const MNN::Op *op) override;
 
     virtual void onResizeBegin() override;
-    virtual void onResizeEnd() override;
+    virtual ErrorCode onResizeEnd() override;
 
     virtual void onExecuteBegin() const override;
     virtual void onExecuteEnd() const override;
@@ -127,6 +130,32 @@ public:
         return mPrecision;
     }
 
+    BackendConfig::MemoryMode getMemory() const {
+        return mMemory;
+    }
+    
+    DataType getDataType(const Tensor* tensor);
+
+    cl_channel_type fpType();
+    int fpBytes();
+    
+    void clearRecord() const;
+    void enqeueRecord() const;
+    void releaseRecord();
+    bool isUseRecordQueue(){
+        return mUseRecordQueue;
+    }
+    bool isDevideOpRecord(){
+        return mDevideOpRecord;
+    }
+    void addRecord(cl_recording_qcom &record){
+        mRecordings.emplace_back(record);
+    }
+    void recordKernel2d(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws);
+    void recordKernel3d(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws);
+    void startRecord(cl_recording_qcom &recording);
+    void endRecord(cl_recording_qcom &recording, bool flag = false);
+
     bool isCreateError() const;
     virtual void* onMapTensor(Tensor::MapType mtype, Tensor::DimensionType dtype, const Tensor* srcTensor) override;
     virtual bool onUnmapTensor(Tensor::MapType mtype, Tensor::DimensionType dtype, const Tensor* dstTensor, void* mapPtr) override;
@@ -136,8 +165,9 @@ private:
     void copyToDevice(const Tensor* srcTensor, const Tensor* dstTensor) const;
     void copyFromDeviceInt8(const Tensor* srcTensor, const Tensor* dstTensor) const;
     void copyToDeviceInt8(const Tensor* srcTensor, const Tensor* dstTensor) const;
+    void copyBetweenDevice(const Tensor* srcTensor, const Tensor* dstTensor) const;
 
-    void _allocHostBuffer(int length) const;
+    void _allocHostBuffer(int length, const Tensor* srcTensor) const;
 
     const CLRuntime* mCLRuntime;
 
@@ -149,9 +179,16 @@ private:
     std::shared_ptr<OpenCLRuntime> mOpenCLRuntime;
 
     mutable std::pair<int, std::shared_ptr<cl::Buffer>> mHostBuffer;
+    mutable cl::Buffer *mDeviceBuffer = nullptr;
+    mutable std::shared_ptr<cl::Image> mDeviceTexture;
     BackendConfig::PrecisionMode mPrecision;
+    BackendConfig::MemoryMode mMemory;
     bool mIsCreateError{false};
-
+    mutable std::vector<cl_recording_qcom> mRecordings;
+    bool mUseRecordQueue = false;
+    bool mDevideOpRecord = false;
+    uint32_t mRecordNums = 0;
+    uint32_t mUseRecordableQueueSize;
 private:
 
     void* svmPtr = nullptr;
@@ -170,6 +207,18 @@ public:
     }
     ~OpenCLCreatorRegister() = default;
 };
+
+#ifdef MNN_OPENCL_SEP_BUILD
+#define REGISTER_OPENCL_OP_CREATOR(name, opType, memObj)  \
+    OpenCLCreatorRegister<name> ___OpenCL##name##__##opType##__##memObj##__(opType, memObj)
+#else
+#define REGISTER_OPENCL_OP_CREATOR(name, opType, memObj)                   \
+    void ___OpenCL##name##__##opType##__##memObj##__() {                   \
+        static name _temp;                                                 \
+        OpenCLBackend::addCreator(std::make_pair(opType, memObj), &_temp); \
+    }
+#endif
+
 
 template <typename T>
 class TypedCreator : public OpenCLBackend::Creator {

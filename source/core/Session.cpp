@@ -166,7 +166,7 @@ void Session::_clearCache() {
 
 ErrorCode Session::resize() {
 #ifdef LOG_VERBOSE
-    for (auto& iter : mInputs) {
+    for (auto& iter : mInfo.inputTensors) {
         auto& inputTensor = iter.second;
         MNN_PRINT("before resize, input name:%s, ptr:%p, hostPtr:%p,  shape:", iter.first.c_str(), inputTensor, inputTensor->host<void>());
         inputTensor->printShape();
@@ -223,7 +223,7 @@ ErrorCode Session::resize() {
 
 #ifdef LOG_VERBOSE
     MNN_PRINT("session after resize\n");
-    for (auto& iter : mOutputs) {
+    for (auto& iter : mInfo.outputTensor) {
         auto& outputTensor = iter.second;
         MNN_PRINT("output name:%s, ptr:%p,shape:", iter.first.c_str(), outputTensor);
         outputTensor->printShape();
@@ -338,10 +338,7 @@ ErrorCode Session::updateToModel(Net* net) const {
     int opSize = net->oplists()->size();
     for (int i = 0; i < opSize; ++i) {
         auto op = net->oplists()->GetAs<Op>(i);
-        if ((net->usage() == Usage_INFERENCE || net->usage() == Usage_INFERENCE_STATIC) && op->type() != OpType_Const) {
-            continue;
-        }
-        if (net->usage() == Usage_TRAIN && op->type() != OpType_TrainableParam) {
+        if (op->type() != OpType_Const && op->type() != OpType_TrainableParam) {
             continue;
         }
         if (!op->outputIndexes() || op->outputIndexes()->size() != 1) {

@@ -49,10 +49,15 @@ std::pair<std::vector<uint32_t>, uint32_t> localWS3DDefault(const std::vector<ui
     auto maxWorkItemSizes = runtime->getMaxWorkItemSizes();
     MNN_ASSERT(maxWorkItemSizes.size() >= 3);
     auto& tunedLws = runtime->tunedLwsMap();
+    auto& tuneLws = runtime->getTuneLwsMap();
     std::pair<std::string, std::vector<uint32_t>> info = std::make_pair(kernelName, gws);
     if (tunedLws.find(info) != tunedLws.end()) {
         //printf("conv2d1x1LocalWSOpt Found! gws:%d %d lws:%d %d\n", gws[0], gws[1], tunedLws[info][0], tunedLws[info][1]);
         return tunedLws[info];
+    }
+    std::pair<std::vector<uint32_t>, uint32_t> tuneLwsRes;
+    if(localWSTune(tuneLws, gws, kernelName, tuneLwsRes)){
+        return tuneLwsRes;
     }
     
     std::vector<uint32_t> lws(3, 1);
@@ -259,7 +264,7 @@ std::pair<std::vector<uint32_t>, uint32_t> localWS3DDefault(const std::vector<ui
         }
     }
     
-    if (tunedLws.find(info) == tunedLws.end()) {
+    if (tunedLws.find(info) == tunedLws.end() && runtime->getCLTuneLevel() != None) {
         //printf("3dLocalWS %d Insert! gws:%d %d %d, lws:%d %d %d\n", (int)tunedLws.size(), gws[0], gws[1], gws[2], lws_prefer[0], lws_prefer[1], lws_prefer[2]);
         tunedLws.insert(std::make_pair(info, std::make_pair(lws_prefer, min_cost)));
     }
@@ -274,10 +279,15 @@ std::pair<std::vector<uint32_t>, uint32_t> localWS2DDefault(const std::vector<ui
     auto maxWorkItemSizes = runtime->getMaxWorkItemSizes();
     MNN_ASSERT(maxWorkItemSizes.size() >= 2);
     auto& tunedLws = runtime->tunedLwsMap();
+    auto& tuneLws = runtime->getTuneLwsMap();
     std::pair<std::string, std::vector<uint32_t>> info = std::make_pair(kernelName, gws);
     if (tunedLws.find(info) != tunedLws.end()) {
         //printf("conv2d1x1LocalWSOpt Found! gws:%d %d lws:%d %d\n", gws[0], gws[1], tunedLws[info][0], tunedLws[info][1]);
         return tunedLws[info];
+    }
+    std::pair<std::vector<uint32_t>, uint32_t> tuneLwsRes;
+    if(localWSTune(tuneLws, gws, kernelName, tuneLwsRes)){
+        return tuneLwsRes;
     }
     
     std::vector<uint32_t> lws(3, 1);
@@ -453,7 +463,7 @@ std::pair<std::vector<uint32_t>, uint32_t> localWS2DDefault(const std::vector<ui
         }
     }
     
-    if (tunedLws.find(info) == tunedLws.end()) {
+    if (tunedLws.find(info) == tunedLws.end() && runtime->getCLTuneLevel() != None) {
         //printf("2dLocalWS %d Insert! gws:%d %d, lws:%d %d\n", (int)tunedLws.size(), gws[0], gws[1], lws_prefer[0], lws_prefer[1]);
         tunedLws.insert(std::make_pair(info, std::make_pair(lws_prefer, min_cost)));
     }
@@ -560,144 +570,36 @@ void copyBufferToImage(OpenCLRuntime *runtime, const cl::Buffer &buffer, const c
     comandQueue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(w, h, 1));
 }
 
-void startRecord(OpenCLRuntime *runtime, cl_recording_qcom &recording){
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(!runtime->isUseRecordQueue()){
-        return;
+bool localWSTune(const std::map<std::string, std::vector<std::pair<std::vector<uint32_t>, std::pair<std::vector<uint32_t>, uint32_t>>>> &tuneMap, const std::vector<uint32_t> &gws, const std::string &kernelName, std::pair<std::vector<uint32_t>, uint32_t>& res){
+    float minScale = 0.1;
+    auto iter = tuneMap.find(kernelName);
+    if(iter == tuneMap.end()){
+        return false;
     }
-#ifdef LOG_VERBOSE
-    MNN_PRINT("start startRecord !\n");
-#endif
-    cl_int res = CL_SUCCESS;
-    if(runtime->isDevideOpRecord()){
-        if(recording != NULL){
-            clReleaseRecordingQCOM(recording);
+    auto gwsAndLws = iter->second;
+    int size = gws.size();
+    int minPoint = INT_MAX;
+    int index = -1;
+    for(int i = 0; i < gwsAndLws.size(); ++i){
+        int point = 0;
+        for(int j = 0; j < size; ++j){
+            point += std::abs((int)gws[j] - (int)gwsAndLws[i].first[j]);
         }
-        recording = runtime->recordableQueue().NewRecordingQCOM(&res);
-        MNN_CHECK_CL_SUCCESS(res, "clNewRecordingQCOM");
-    }
-#ifdef LOG_VERBOSE
-    MNN_PRINT("end startRecord !\n");
-#endif
-#endif //ENABLE_OPENCL_TIME_PROFILER
-}
-
-void endRecord(OpenCLRuntime *runtime, cl_recording_qcom &recording){
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(!runtime->isUseRecordQueue()){
-        return;
-    }
-#ifdef LOG_VERBOSE
-    MNN_PRINT("start endRecord !\n");
-#endif
-    if(runtime->isDevideOpRecord()){
-        cl_int res = CL_SUCCESS;
-        res = clEndRecordingQCOM(recording);
-        MNN_CHECK_CL_SUCCESS(res, "clEndRecordingQCOM");
-    }
-#ifdef LOG_VERBOSE
-    MNN_PRINT("end endRecord !\n");
-#endif
-#endif //ENABLE_OPENCL_TIME_PROFILER
-}
-
-void recordKernel2d(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
-                 OpenCLRuntime *runtime) {
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(!runtime->isUseRecordQueue()){
-        return;
-    }
-#ifdef LOG_VERBOSE
-    MNN_PRINT("start recordKernel !\n");
-#endif
-    cl_int res = CL_SUCCESS;
-    if(!runtime->isDevideOpRecord()){
-        auto RecordNum = runtime->getRecordNum();
-        auto maxRecordNum = runtime->getUseRecordableQueueSize();
-        if(RecordNum == 0){
-            cl_recording_qcom recording = runtime->recordableQueue().NewRecordingQCOM(&res);
-            MNN_CHECK_CL_SUCCESS(res, "clNewRecordingQCOM");
-            runtime->getRecordings()->emplace_back(recording);
-        }else if(RecordNum == maxRecordNum){
-            res = clEndRecordingQCOM( runtime->getRecordings()->back());
-            MNN_CHECK_CL_SUCCESS(res, "clEndRecordingQCOM");
-            cl_recording_qcom recording = runtime->recordableQueue().NewRecordingQCOM(&res);
-            MNN_CHECK_CL_SUCCESS(res, "clNewRecordingQCOM");
-            runtime->getRecordings()->emplace_back(recording);
-            RecordNum = 0;
+        if(point < minPoint){
+            index = i;
+            minPoint = point;
         }
-        RecordNum++;
-        runtime->setRecordNum(RecordNum);
     }
-    
-    std::vector<uint32_t> internalGlobalWS = gws;
-    for (size_t i = 0; i < 2; ++i) {
-        internalGlobalWS[i] = ROUND_UP(gws[i], std::max((uint32_t)1, lws[i]));
+    if(index != -1){
+//        for(int i = 0; i < size; ++i){
+//            float scale = (std::abs((float)gws[i] - (float)gwsAndLws[index].second[i])) / (float)gws[i];
+//            if(scale >= minScale){
+//                return localSize;
+//            }
+//        }
+        res = gwsAndLws[index].second;
     }
-
-    if(lws[0]==0 || lws[1]==0){
-        res = runtime->recordableQueue().enqueueNDRangeKernel(
-            kernel, cl::NullRange, cl::NDRange(internalGlobalWS[0], internalGlobalWS[1]), cl::NullRange, nullptr, nullptr);
-
-    }else{
-        res = runtime->recordableQueue().enqueueNDRangeKernel(
-            kernel, cl::NullRange, cl::NDRange(internalGlobalWS[0], internalGlobalWS[1]), cl::NDRange(lws[0], lws[1]), nullptr, nullptr);
-    }
-    MNN_CHECK_CL_SUCCESS(res, "recordKernel2d");
-
-#ifdef LOG_VERBOSE
-    MNN_PRINT("end recordKernel !\n");
-#endif
-#endif //ENABLE_OPENCL_TIME_PROFILER
-}
-
-void recordKernel3d(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
-                 OpenCLRuntime *runtime) {
-#if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
-    if(!runtime->isUseRecordQueue()){
-        return;
-    }
-#ifdef LOG_VERBOSE
-    MNN_PRINT("start recordKernel !\n");
-#endif
-    cl_int res = CL_SUCCESS;
-    std::vector<uint32_t> internalGlobalWS = gws;
-    for (size_t i = 0; i < 3; ++i) {
-        internalGlobalWS[i] = ROUND_UP(gws[i], std::max((uint32_t)1, lws[i]));
-    }
-    if(!runtime->isDevideOpRecord()){
-        auto maxRecordNum = runtime->getUseRecordableQueueSize();
-        auto RecordNum = runtime->getRecordNum();
-        if(RecordNum == 0){
-            cl_recording_qcom recording = runtime->recordableQueue().NewRecordingQCOM(&res);
-            MNN_CHECK_CL_SUCCESS(res, "clNewRecordingQCOM");
-            runtime->getRecordings()->emplace_back(recording);
-        }else if(RecordNum == maxRecordNum){
-            res = clEndRecordingQCOM( runtime->getRecordings()->back());
-            MNN_CHECK_CL_SUCCESS(res, "clEndRecordingQCOM");
-            cl_recording_qcom recording = runtime->recordableQueue().NewRecordingQCOM(&res);
-            MNN_CHECK_CL_SUCCESS(res, "clNewRecordingQCOM");
-            runtime->getRecordings()->emplace_back(recording);
-            RecordNum = 0;
-        }
-        RecordNum++;
-        runtime->setRecordNum(RecordNum);
-    }
-
-    if(lws[0]==0 || lws[1]==0 || lws[2]==0){
-        res = runtime->recordableQueue().enqueueNDRangeKernel(
-            kernel, cl::NullRange, cl::NDRange(internalGlobalWS[0], internalGlobalWS[1], internalGlobalWS[2]), cl::NullRange, nullptr, nullptr);
-
-    }else{
-        res = runtime->recordableQueue().enqueueNDRangeKernel(
-            kernel, cl::NullRange, cl::NDRange(internalGlobalWS[0], internalGlobalWS[1], internalGlobalWS[2]), cl::NDRange(lws[0], lws[1], lws[2]), nullptr, nullptr);
-    }
-    MNN_CHECK_CL_SUCCESS(res, "recordKernel3d");
-    
-#ifdef LOG_VERBOSE
-    MNN_PRINT("end recordKernel !\n");
-#endif
-#endif //ENABLE_OPENCL_TIME_PROFILER
+    return true;
 }
 
 } // namespace OpenCL

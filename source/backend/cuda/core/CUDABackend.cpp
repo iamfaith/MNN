@@ -19,7 +19,7 @@
 #include "execution/MNNCUDADefine.hpp"
 #include "execution/CastExecution.hpp"
 #include "CUDATools.hpp"
-
+#include "execution/FuseExecutionV2.hpp"
 // #define MNN_CUDA_COPY_DEBUG
 
 namespace MNN {
@@ -68,6 +68,14 @@ CUDARuntimeWrapper::~CUDARuntimeWrapper() {
 float CUDARuntimeWrapper::onGetMemoryInMB() {
     auto staticMemoryInMB = mBufferPool->totalSize() / 1024.0f / 1024.0f;
     return staticMemoryInMB;
+}
+
+std::pair<const void*, size_t> CUDARuntimeWrapper::onGetCache() {//make Cache
+    return mCUDARuntime->makeCache();
+}
+
+bool CUDARuntimeWrapper::onSetCache(const void* buffer, size_t size) {//set Cache
+    return mCUDARuntime->setCache(std::make_pair(buffer, size));
 }
 
 Backend* CUDARuntimeWrapper::onCreate(const BackendConfig* config) const {
@@ -238,6 +246,16 @@ static OpType _getRealOpType(OpType opType) {
     }
 }
 
+#ifdef MNN_CODEGEN_CUDA
+void CUDABackend::compile(CUmodule* dst, std::pair<string, string> code, std::vector<const char*> compile_params) {
+    std::vector<const char *> param;
+    auto ptx_code =
+        CUDANVRTCCompile(code, param, mCUDARuntime->compute_capability(), false);
+
+    MNN_CUDA_SAFE_CALL(cuModuleLoadDataEx(dst, ptx_code.c_str(), 0, 0, 0));
+}
+#endif
+
 Execution* CUDABackend::onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                  const MNN::Op* op) {
 // #ifdef LOG_VERBOSE
@@ -263,21 +281,23 @@ Execution* CUDABackend::onCreate(const std::vector<Tensor*>& inputs, const std::
 
     #ifdef MNN_CODEGEN_CUDA
     if(op->type() == OpType_Extra) {
-        auto extra = op->main_as_Extra();
-        std::string source(reinterpret_cast<const char*>(extra->info()->data()));
-        auto kernel_name = extra->type()->c_str();
-        std::string kernel_source = source;
+        if (!FuseExecutionV2::check(op)) {
+            auto extra = op->main_as_Extra();
+            std::string source(reinterpret_cast<const char*>(extra->info()->data()));
+            auto kernel_name = extra->type()->c_str();
+            std::string kernel_source = source;
 
-        std::pair<std::string, std::string> kernelInfo = std::make_pair<std::string, std::string>(kernel_name, kernel_source.c_str());
-        if(mKernelCuModuleMap.find(kernelInfo) == mKernelCuModuleMap.end()) {
-            // printf("\n%s\n\n%s !!!!\n", kernel_source.c_str(), kernel_name);
-            std::vector<const char *> param;
-            bool includeHeadFile = mUseFp16AsFp32;
-            auto ptx_code =
-                CUDANVRTCCompile(kernelInfo, param, mCUDARuntime->compute_capability(), includeHeadFile);
-            
-            MNN_CUDA_SAFE_CALL(cuModuleLoadDataEx(&mCuModule, ptx_code.c_str(), 0, 0, 0));
-            mKernelCuModuleMap.insert(std::pair<std::pair<std::string, std:: string>, CUmodule>(kernelInfo, mCuModule));
+            std::pair<std::string, std::string> kernelInfo = std::make_pair<std::string, std::string>(kernel_name, kernel_source.c_str());
+            if(mKernelCuModuleMap.find(kernelInfo) == mKernelCuModuleMap.end()) {
+                // printf("\n%s\n\n%s !!!!\n", kernel_source.c_str(), kernel_name);
+                std::vector<const char *> param;
+                bool includeHeadFile = mUseFp16AsFp32;
+                auto ptx_code =
+                    CUDANVRTCCompile(kernelInfo, param, mCUDARuntime->compute_capability(), includeHeadFile);
+                
+                MNN_CUDA_SAFE_CALL(cuModuleLoadDataEx(&mCuModule, ptx_code.c_str(), 0, 0, 0));
+                mKernelCuModuleMap.insert(std::pair<std::pair<std::string, std:: string>, CUmodule>(kernelInfo, mCuModule));
+            }
         }
     }
     #endif
@@ -301,7 +321,8 @@ Execution* CUDABackend::onCreate(const std::vector<Tensor*>& inputs, const std::
 void CUDABackend::onResizeBegin() {
 }
 
-void CUDABackend::onResizeEnd() {
+ErrorCode CUDABackend::onResizeEnd() {
+    return NO_ERROR;
 }
 
 void CUDABackend::onExecuteBegin() const {
@@ -413,7 +434,7 @@ void CUDABackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor)
     MNN_PRINT("addr:%p %p\n", srcTensor->deviceId(), dstTensor->deviceId());
 #endif
 
-
+    // printf("MNN srcDevice:%d %llu, dstDevice:%d %llu, directCopy:%d\n", srcDevice, srcTensor->deviceId(), dstDevice, dstTensor->deviceId(), directCopy);
     if (directCopy) {
         auto gpuSize = realSize(srcTensor) * getBytes(srcTensor);
         if (srcDevice && dstDevice) {
@@ -528,6 +549,13 @@ void CUDABackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor)
     }
     NVTX_POP();
     return;
+}
+
+int CUDABackend::onSync(Tensor::MapType mtype, bool toCpu, const Tensor* dstTensor) {
+    if (toCpu) {
+        mCUDARuntime->device_sync();
+    }
+    return 0;
 }
 
 DataType CUDABackend::getDataType(const Tensor* tensor) {

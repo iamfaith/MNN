@@ -30,6 +30,10 @@ static string swapComputeIn0In1(const string& computeOrigin) {
 EltwiseExecution::EltwiseExecution(const std::vector<Tensor *> &inputs, const std::string &compute, const MNN::Op *op, Backend *backend)
     : CommonExecution(backend, op), mCompute(compute) {
     mBuildOptions.emplace("-DOPERATOR=" + compute);
+    auto dataType = inputs[0]->getType();
+    if (dataType.code == halide_type_int){
+        mBuildOptions.emplace("-DOPENCL_INPUT_INT");
+    }
 }
 
 uint32_t EltwiseExecution::realSize(const Tensor* tensor) {
@@ -45,7 +49,7 @@ ErrorCode EltwiseExecution::onResize(const std::vector<Tensor *> &inputs, const 
     mUnits.resize(inputs.size() - 1);
     
     auto openCLBackend = static_cast<OpenCLBackend*>(backend());
-    startRecord(openCLBackend->getOpenCLRuntime(), mRecording);
+    openCLBackend->startRecord(mRecording);
 
     auto output = outputs[0];
     auto inputShape0 = tensorShapeFormat(inputs[0]);
@@ -88,8 +92,8 @@ ErrorCode EltwiseExecution::onResize(const std::vector<Tensor *> &inputs, const 
         unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1]};
         unit.localWorkSize  = {mLocalWorkSize[0], mLocalWorkSize[1]};
         
-        recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize, openCLBackend->getOpenCLRuntime());
-        endRecord(openCLBackend->getOpenCLRuntime(), mRecording);
+        openCLBackend->recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
+        openCLBackend->endRecord(mRecording);
         return NO_ERROR;
     }
     
@@ -146,9 +150,9 @@ ErrorCode EltwiseExecution::onResize(const std::vector<Tensor *> &inputs, const 
         unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1]};
         unit.localWorkSize  = {mLocalWorkSize[0], mLocalWorkSize[1]};
         
-        recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize, openCLBackend->getOpenCLRuntime());
+        openCLBackend->recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
     }
-    endRecord(openCLBackend->getOpenCLRuntime(), mRecording);
+    openCLBackend->endRecord(mRecording);
     return NO_ERROR;
 }
 
@@ -207,7 +211,7 @@ public:
                 case BinaryOpOperation_SquaredDifference:
                     return new EltwiseExecution(inputs, "(in0-in1)*(in0-in1)", op, backend);
                 case BinaryOpOperation_ATAN2:
-                    return new EltwiseExecution(inputs, "atan(sign(in1)*in0/(fabs(in1)>(FLOAT4)((FLOAT)0.0000001)?fabs(in1):(FLOAT4)((FLOAT)0.0000001)))", op, backend);
+                    return new EltwiseExecution(inputs, "(in1==(FLOAT4)0?(sign(in0)*(FLOAT4)(PI/2)):(atan(in0/in1)+(in1>(FLOAT4)0?(FLOAT4)0:sign(in0)*(FLOAT4)PI)))", op, backend);
                 case BinaryOpOperation_NOTEQUAL:
                     return new EltwiseExecution(inputs, "convert_float4(-isnotequal(in0,in1))", op, backend);
                 case BinaryOpOperation_MOD:
@@ -221,8 +225,8 @@ public:
     }
 };
 
-OpenCLCreatorRegister<EltwiseCreator> __eltwise_op(OpType_Eltwise, IMAGE);
-OpenCLCreatorRegister<EltwiseCreator> __binary_op(OpType_BinaryOp, IMAGE);
+REGISTER_OPENCL_OP_CREATOR(EltwiseCreator, OpType_Eltwise, IMAGE);
+REGISTER_OPENCL_OP_CREATOR(EltwiseCreator, OpType_BinaryOp, IMAGE);
 
 } // namespace OpenCL
 } // namespace MNN

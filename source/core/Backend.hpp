@@ -49,8 +49,8 @@ public:
         };
         Mode mode = DIRECT;
         enum Allocator {
-            EAGER = 0,
-            DEFER = 1
+            DEFER = 0,
+            EAGER = 1
         };
         Allocator allocator = DEFER;
     };
@@ -115,9 +115,7 @@ public:
     /**
      * @brief callback after resize ops.
      */
-    virtual void onResizeEnd() {
-        // nothing to do
-    }
+    virtual ErrorCode onResizeEnd() = 0;
 
     /**
      * @brief callback before executing ops.
@@ -162,6 +160,15 @@ public:
      * @return MemObj for release, if failed, return nullptr.
      */
     virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType) = 0;
+    
+    /**
+     * @brief get buffer from tensor directly
+     * @param tensor        buffer provider.
+     * @return support or not
+     */
+    virtual bool onGetTensorInfo(const Tensor* tensor, void* dstInfo) {
+        return false;
+    }
 
     /**
      * @brief clear all dynamic buffers.
@@ -311,7 +318,7 @@ public:
 private:
     std::future<int> mFuture;
     std::string mExternalFile;
-    AllocatorType mAllocatorType;
+    AllocatorType mAllocatorType = Allocator_Eager;
 };
 
 /** abstract Runtime register */

@@ -21,7 +21,7 @@
 //#define MNN_PIPELINE_DEBUG
 namespace MNN {
 
-
+// FIXME: Move in Backend
 static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, MNNForwardType type) {
     auto otype = op->type();
     switch (otype) {
@@ -78,6 +78,10 @@ static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, cons
         case OpType_Interp:
             return true;
         case OpType_LayerNorm:
+            return true;
+        case OpType_UnaryOp:
+            return true;
+        case OpType_PReLU:
             return true;
         default:
             break;
@@ -258,7 +262,7 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
 #endif
     }
     // Propagate Scale and insert new command
-    if (mIsQuantModel && (mBackend->type() == MNN_FORWARD_CPU || mBackend->type() == MNN_FORWARD_CPU_EXTENSION || mBackend->type() == MNN_FORWARD_CUDA || mBackend->type() == MNN_FORWARD_NN)) {
+    if (mIsQuantModel && (mBackend->type() == MNN_FORWARD_CPU || mBackend->type() == MNN_FORWARD_CPU_EXTENSION || mBackend->type() == MNN_FORWARD_CUDA || mBackend->type() == MNN_FORWARD_NN || mBackend->type() == MNN_FORWARD_OPENCL)) {
         // get propagate map
         using PropagateMap = std::map<const MNN::Tensor*, std::set<const MNN::Tensor*>>;
         PropagateMap forwardMap, backwardMap;
@@ -420,7 +424,7 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
                     }
                 } else {
                     for (int i = 0; i < cmd.inputs.size(); i++) {
-                        if (OpCommonUtils::opNeedContent(opType, i) && inputs[i]->getType() != halide_type_of<int>()) {
+                        if (OpCommonUtils::opNeedContent(cmd.op, i) && inputs[i]->getType() != halide_type_of<int>()) {
                             bool needCast = CPUBackend::getDataType(inputs[i]) != runType;
                             if (needCast) {
                                 cmd.inputs[i] = makeCommand(info.executeBuffer, inputs[i], runType);
@@ -768,6 +772,12 @@ static ErrorCode _InsertCopy(Schedule::PipelineInfo& mInfo, std::map<Tensor*, st
                     buffer.extras.emplace_back(copyWrap.second);
                     cmd.execution.reset(copyWrap.first);
                     buffer.command.emplace_back(cmdP);
+                    for(int i = 0; i < iter.inputs.size(); ++i){
+                        if(t == iter.inputs[i]){
+                            iterP->workOutputs[v] = iter.workInputs[i];
+                            cmd.workInputs = {iter.workInputs[i]};
+                        }
+                    }
                 }
             }
         }
@@ -925,7 +935,6 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             }
 #endif
 
-            // MNN_PRINT("before Resize: optype:%s, name:%s, input0:%p, output0:%p, mAllocInput:%d\n", EnumNameOpType(iter.op->type()), iter.info->name().c_str(), iter.inputs[0], iter.outputs[0], mAllocInput);
             // Alloc for Tensors
             auto curBackend = iter.execution->backend();
             if (mAllocInput) {
@@ -950,8 +959,13 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             }
 #endif
             auto code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
-            if (NO_ERROR != code && (!iter.info.get())) {
-                MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+            if (NO_ERROR != code) {
+#ifdef MNN_PIPELINE_DEBUG
+                MNN_ERROR("Pipeline Resize error: %d\n", code);
+#endif
+                if (iter.info.get()) {
+                    MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+                }
                 return code;
             }
             // Free mid tensor
@@ -967,9 +981,12 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             _recycleDynamicMemory(c.get());
         }
     }
-    mBackend->onResizeEnd();
-    mBackupBackend->onResizeEnd();
-    return NO_ERROR;
+    auto code = mBackend->onResizeEnd();
+    if (code != NO_ERROR) {
+        return code;
+    }
+    code = mBackupBackend->onResizeEnd();
+    return code;
 }
 
 void Pipeline::_copyInputs() {
@@ -1004,26 +1021,32 @@ ErrorCode Pipeline::execute() {
         for (auto& cmdP : buffer.command) {
             auto& cmd = *cmdP;
             auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
+// #define LOG_VERPOSE
 #ifdef LOG_VERPOSE
-            MNN_PRINT("%s Input begin:\n", EnumNameOpType(cmd.op->type()));
-            for (auto t : cmd.workInputs) {
-                auto ptr = (float*)t->map(Tensor::MAP_TENSOR_READ, t->getDimensionType());
+            auto dumpT = [](Tensor* t) {
                 auto size = TensorUtils::getRawSize(t);
-                for (int i=0; i<size; ++i) {
-                    MNN_PRINT("%f, ", ptr[i]);
+                size = size > 10 ? 10 : size;
+                if (t->getType() == halide_type_of<float>()) {
+                    for (int i=0; i<size; ++i) {
+                        MNN_PRINT("%f, ", t->host<float>()[i]);
+                    }
+                } else {
+                    for (int i=0; i<size; ++i) {
+                        MNN_PRINT("%d, ", t->host<int>()[i]);
+                    }
                 }
                 MNN_PRINT("\n");
-                t->unmap(Tensor::MAP_TENSOR_READ, Tensor::CAFFE, ptr);
-            }
-            MNN_PRINT("%s Output begin:\n", EnumNameOpType(cmd.op->type()));
-            for (auto t : cmd.workOutputs) {
-                auto ptr = (float*)t->map(Tensor::MAP_TENSOR_READ, t->getDimensionType());
-                auto size = TensorUtils::getRawSize(t);
-                for (int i=0; i<size; ++i) {
-                    MNN_PRINT("%f, ", ptr[i]);
+            };
+            if (/* cmd.op->name() && cmd.op->name()->str() == "/embed/embed_/Gather_output_0"*/
+                cmd.op->type() == OpType_Convolution) {
+                MNN_PRINT("%s Input begin:\n", EnumNameOpType(cmd.op->type()));
+                for (auto t : cmd.workInputs) {
+                    dumpT(t);
                 }
-                MNN_PRINT("\n");
-                t->unmap(Tensor::MAP_TENSOR_READ, Tensor::CAFFE, ptr);
+                MNN_PRINT("%s Output begin:\n", EnumNameOpType(cmd.op->type()));
+                for (auto t : cmd.workOutputs) {
+                    dumpT(t);
+                }
             }
 #endif
             if (NO_ERROR != code) {

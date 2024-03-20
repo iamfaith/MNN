@@ -14,6 +14,7 @@
 #include "core/TensorUtils.hpp"
 #include "MNN_generated.h"
 #include "MetalDefine.h"
+#include <MNN/ErrorCode.hpp>
 #include <vector>
 //#include "MNNMetalContext.h"
 #include "MetalCache_generated.h"
@@ -36,10 +37,18 @@ public:
     }
 
     void setGpuMode(const int cl_mode_num);
+    void setCommandQueue(id<MTLCommandQueue> queue, bool userSync);
+    id<MTLCommandQueue> getCommandQueue() const {
+        return mQueue;
+    }
+    bool userSync() const {
+        return mUserSync;
+    }
     
     std::pair<const void*, size_t> makeCache(TunedInfo* info);
     bool setCache(std::pair<const void*, size_t> cache);
-    
+    id<MTLComputePipelineState> findPipeline(const std::vector<std::string>& keys) const;
+    void insertPipeline(const std::vector<std::string>& keys, id<MTLComputePipelineState> pipeline) const;
     MetalTuneLevel getTuneLevel() {
         return mTuneLevel;
     }
@@ -69,10 +78,14 @@ private:
     std::map<std::pair<std::string, std::vector<uint32_t>>, std::tuple<std::vector<uint32_t>, std::vector<uint32_t>, uint32_t>> mTunedThreadGroup;
 
 private:
+    id<MTLCommandQueue> mQueue = nil;
+    bool mUserSync = false;
     std::vector<uint8_t> mBuffer;
     const void* mCacheOutside = nullptr;
     size_t mCacheOutsideSize = 0;
     TunedInfo* mTunedInfo;
+    BackendConfig mDefaultConfig;
+    mutable std::map<std::vector<std::string>, id<MTLComputePipelineState>> mCachePipeine;
 };
 
 
@@ -123,11 +136,15 @@ public:
      * @param creator   registering creator.
      */
     static void addCreator(OpType type, Creator *creator);
+    static void setTensor(MNN::Tensor* tensor, id<MTLComputeCommandEncoder> encoder, int index);
+    static std::pair<id<MTLBuffer>, int> getBuffer(MNN::Tensor* tensor);
+    size_t getTensorSizeInBytes(const Tensor* tensor) const;
 
     id<MTLBuffer> getHostBuffer(size_t size) const;
     id<MTLBuffer> getConstBuffer(size_t size) const;
+    id<MTLComputePipelineState> makeComputePipelineWithSourceOption(const char* csource, const char* cname, MTLCompileOptions *options) const;
 public:
-    MetalBackend(std::shared_ptr<EagerBufferAllocator> staticMem, const MetalRuntime* runtime);
+    MetalBackend(std::shared_ptr<EagerBufferAllocator> staticMem, const MetalRuntime* runtime, bool usefp16AsFp32);
     virtual ~MetalBackend();
     const MetalRuntime* runtime() const {
         return mRuntime;
@@ -141,10 +158,11 @@ public:
                                 const MNN::Op *op) override;
     
     virtual void onResizeBegin() override;
-    virtual void onResizeEnd() override;
+    virtual ErrorCode onResizeEnd() override;
     virtual void onExecuteBegin() const override;
     virtual void onExecuteEnd() const override;
     virtual int onSync(Tensor::MapType mtype, bool toCpu, const Tensor* dstTensor) override;
+    virtual bool onGetTensorInfo(const Tensor* tensor, void* dstInfo) override;
 
 public:
     /**
@@ -163,11 +181,10 @@ public:
                               id<MTLComputeCommandEncoder> encoder, id<MTLBuffer> shape) const;
 
     void flushEncoder() const;
-    id<MTLComputeCommandEncoder> encoder() const;
+    id<MTLComputeCommandEncoder> encoder_for_net() const;
     void addOpEncoder(std::function<void(void)> opEncoder);
     
     bool isCommandEncoderSet();
-    void setOpEncoder() const;
     
     EagerBufferAllocator *getBufferPool() const {
         return mBufferPool.get();
@@ -177,15 +194,36 @@ public:
     }
 
     bool isCmdBufferCommit();
+    bool isIphone(){
+        return mIsIphone;
+    }
     
+    void commit() const;
+    void commit_net() const;
+    void wait() const;
+    id<MTLCommandQueue> queue() const {
+        return _commandQueue;
+    }
+    bool useFp16InsteadFp32() const {
+        return mUseFloatAsFp16;
+    }
 private:
+    id<MTLCommandBuffer> getCommandBufferForBufferCopy() const;
+    id<MTLCommandBuffer> getCommandBufferForNet() const;
+    id<MTLComputeCommandEncoder> encoder_net() const;
+    mutable id<MTLCommandBuffer> _commandBuffer = nil;
+    mutable id<MTLCommandBuffer> _commandBuffer_net = nil;
+    mutable id<MTLCommandBuffer> _waiting = nil;
+
+    id<MTLCommandQueue> _commandQueue;
+
     const MetalRuntime* mRuntime;
     std::vector<id<MTLBuffer>> mHoldBuffers;
     id<MTLBuffer> mShapeH2D;
     id<MTLBuffer> mShapeD2H;
     mutable NSUInteger mEncoderCount = 0;
     mutable bool mOpEncoderSet = false;//whether has set encoder
-    mutable bool mOpFullSupport = true;
+    mutable bool mSupportDeferEncode = true;
     mutable bool mFrameEncodeCache = false;
 
     std::vector<std::function<void(void)>> mOpEncoders;
@@ -198,6 +236,8 @@ private:
     void onCopyHostToDevice(const Tensor *src, const Tensor *dst) const;
     void onCopyDeviceToHost(const Tensor *src, const Tensor *dst) const;
     void onCopyDeviceToDevice(const Tensor *src, const Tensor *dst, id<MTLComputeCommandEncoder> encoder, id<MTLBuffer> shape) const;
+    bool mUseFloatAsFp16;
+    bool mIsIphone = false;
 };
 
 

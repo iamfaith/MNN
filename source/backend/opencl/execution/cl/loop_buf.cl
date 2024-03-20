@@ -1,80 +1,7 @@
 #ifdef MNN_SUPPORT_FP16
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #endif
-
-__kernel void batch_matmul_buf(__private int global_dim0, __private int global_dim1, __private int global_dim2,
-                         __global FLOAT* output, __global FLOAT* input_A, __global FLOAT* input_B,
-#ifdef BIAS
-                        __global FLOAT* input_C,
-#endif
-                        __global FLOAT* offset_O, __global FLOAT* offset_A, __global FLOAT* offset_B,
-#ifdef BIAS
-                        __global FLOAT* offset_C,
-#endif
-                         __private const int e,
-                         __private const int l,
-                         __private const int h,
-                         __private const int4 offsets,
-                         __private const int4 iters,
-                         __private const int4 steps) {
-    int3 pos = (int3)(get_global_id(0), get_global_id(1), get_global_id(2));
-    
-    if (pos.x < global_dim0 && pos.y < global_dim1 && pos.z < global_dim2) {
-        int4 index = (int4)(pos.z);
-        if (iters.x >= 0) {
-            index.x = (int)(offset_O[pos.z]);
-        }
-        if (iters.y >= 0) {
-            index.y = (int)(offset_A[pos.z]);
-        }
-        if (iters.z >= 0) {
-            index.z = (int)(offset_B[pos.z]);
-        }
-#ifdef BIAS
-        if (iters.w >= 0) {
-            index.w = (int)(offset_C[pos.z]);
-        }
-#endif
-        int4 offset = index * steps + offsets;
-        
-#if TRANSPOSE_A
-        __global FLOAT* A_ptr = input_A + offset.y + pos.y;
-#else
-        __global FLOAT* A_ptr = input_A + offset.y + pos.y * l;
-#endif
-
-#if TRANSPOSE_B
-        __global FLOAT* B_ptr = input_B + offset.z + pos.x * l;
-#else
-        __global FLOAT* B_ptr = input_B + offset.z + pos.x;
-#endif
-
-#ifdef BIAS
-        FLOAT value = input_C[offset.w + pos.x];
-#else
-        FLOAT value = 0;
-#endif
-
-        for(int i = 0; i < l; ++i){
-#if TRANSPOSE_A
-            FLOAT value_a = A_ptr[i * e];
-#else
-            FLOAT value_a = A_ptr[i];
-#endif
-
-#if TRANSPOSE_B
-            FLOAT value_b = B_ptr[i];
-#else
-            FLOAT value_b = B_ptr[i * h];
-#endif
-
-            value = mad(value_a, value_b, value);
-        }
-
-        output[offset.x + pos.y * h + pos.x] = value;
-    }
-}
-
+#define PI 3.141592653589f
 __kernel void tile_buf(__private int global_dim0, __private int global_dim1, __private int global_dim2,
                         __global FLOAT* input, __global FLOAT* output,
                         __private const int width,
@@ -89,11 +16,17 @@ __kernel void tile_buf(__private int global_dim0, __private int global_dim1, __p
         const int y_src_pitch = x_src_pitch * width;
         const int c_src_pitch = y_src_pitch * height;
         const int b_src_pitch = c_src_pitch * ((channel + 3) / 4);
-
+#ifdef MNN_NHWC
+        const int c_dst_pitch = 1;
+        const int x_dst_pitch = c_dst_pitch * channel;
+        const int y_dst_pitch = x_dst_pitch * width;
+        const int b_dst_pitch = y_dst_pitch * height;
+#else
         const int x_dst_pitch = 1;
         const int y_dst_pitch = x_dst_pitch * width;
         const int c_dst_pitch = y_dst_pitch * height;
         const int b_dst_pitch = c_dst_pitch * channel;
+#endif
         __global FLOAT* dst_ptr = output + pos.z * b_dst_pitch + c * c_dst_pitch + h * y_dst_pitch + w * x_dst_pitch;
 
         FLOAT4 value = vload4(0, input + pos.z * b_src_pitch + pos.y * c_src_pitch + h * y_src_pitch + w * x_src_pitch);
@@ -121,11 +54,17 @@ __kernel void pack_buf(__private int global_dim0, __private int global_dim1, __p
         const int y_dst_pitch = x_dst_pitch * width;
         const int c_dst_pitch = y_dst_pitch * height;
         const int b_dst_pitch = c_dst_pitch * ((channel + 3) / 4);
-
+#ifdef MNN_NHWC
+        const int c_src_pitch = 1;
+        const int x_src_pitch = c_src_pitch * channel;
+        const int y_src_pitch = x_src_pitch * width;
+        const int b_src_pitch = y_src_pitch * height;
+#else
         const int x_src_pitch = 1;
         const int y_src_pitch = x_src_pitch * width;
         const int c_src_pitch = y_src_pitch * height;
         const int b_src_pitch = c_src_pitch * channel;
+#endif
         __global FLOAT* src_ptr = input + pos.z * b_src_pitch + c * c_src_pitch + h * y_src_pitch + w * x_src_pitch;
         FLOAT4 value = (FLOAT4)0;
         FLOAT *value_ptr = (FLOAT*)&value;
@@ -136,29 +75,83 @@ __kernel void pack_buf(__private int global_dim0, __private int global_dim1, __p
     }
 }
 
-__kernel void batch_gather_buf(__private int global_dim0, __private int global_dim1, __private int global_dim2,
-                         __global FLOAT* output, __global FLOAT* input,
-                         __global FLOAT* offset_dst, __global FLOAT* offset_src,
-                         __private const int x_size,
-                         __private const int4 stride_src,
-                         __private const int4 stride_dst,
-                         __private const int2 steps,
-                         __private const int2 iters) {
+#ifdef LOOP_BINARY_OPERATOR
+__kernel void broadcast_binary_buf(__private int global_dim0, __private int global_dim1, __private int global_dim2,
+                         __global FLOAT* output, __global FLOAT* input0, __global FLOAT* input1,
+                         __private const int8 src0_size, //(batch, channel, height, width)
+                         __private const int4 src0C4_size, // nc4hw4
+                         __private const int8 src1_size,
+                         __private const int4 src1C4_size,
+                         __private const int8 dst_size,
+                         __private const int dst_width,
+                         __private const int dst_height,
+                         __private const int dst_channel,
+                         __private const int channel_block) {
     int3 pos = (int3)(get_global_id(0), get_global_id(1), get_global_id(2));
     
     if (pos.x < global_dim0 && pos.y < global_dim1 && pos.z < global_dim2) {
         
-        int x = pos.x % x_size;
-        int y = pos.x / x_size;
-
-        int2 index = (int2)(pos.z, pos.z);
-        if (iters.x >= 0) {
-            index.x = (int)(offset_dst[pos.z]);
+        const int wo = pos.x;
+        const int ho = pos.y;
+        const int co = pos.z % channel_block;
+        const int no = pos.z / channel_block;
+        int co4 = co << 2;
+        int4 covec = (int4)(co4 % dst_channel, (co4 + 1) % dst_channel, (co4 + 2) % dst_channel, (co4 + 3) % dst_channel);
+        int4 out_offset = ((no * dst_channel + covec) * dst_height + ho) * dst_width + wo;
+        int4 w = out_offset % (dst_size.s3 * dst_size.s4); out_offset /= (dst_size.s3 * dst_size.s4);
+        int4 h = out_offset % dst_size.s2; out_offset /= dst_size.s2;
+        int4 c = out_offset % dst_size.s1; out_offset /= dst_size.s1;
+        int4 n = out_offset % dst_size.s0;
+        const int src0_channel_block = (src0C4_size.z + 3) / 4;
+        const int src1_channel_block = (src1C4_size.z + 3) / 4;
+        FLOAT4 in0, in1;
+        FLOAT* in0_ptr = (FLOAT*)&in0;
+        FLOAT* in1_ptr = (FLOAT*)&in1;
+        
+        {
+            int4 w0 = w % (src0_size.s3 * src0_size.s4);
+            int4 h0 = h % src0_size.s2;
+            int4 c0 = c % src0_size.s1;
+            int4 n0 = n % src0_size.s0;
+            int* w0_ptr = (int*)&w0;
+            int* h0_ptr = (int*)&h0;
+            int* c0_ptr = (int*)&c0;
+            int* n0_ptr = (int*)&n0;
+            for(int i = 0; i < 4; ++i){
+                int c4offset = ((n0_ptr[i] * src0_size.s1 + c0_ptr[i]) * src0_size.s2 + h0_ptr[i]) * src0_size.s3 * src0_size.s4 + w0_ptr[i];
+                int wc4 = c4offset % src0C4_size.x; c4offset /= src0C4_size.x;
+                int hc4 = c4offset % src0C4_size.y; c4offset /= src0C4_size.y;
+                int cc4 = c4offset % src0C4_size.z; c4offset /= src0C4_size.z;
+                int nc4 = c4offset % src0C4_size.w;
+                int cc4_offset = cc4 / 4;
+                int cc4_remain = cc4 % 4;
+                in0_ptr[i] = input0[((((nc4 * src0_channel_block) + cc4_offset) * src0C4_size.y + hc4) * src0C4_size.x + wc4) * 4 + cc4_remain];
+            }
         }
-        if (iters.y >= 0) {
-            index.y = (int)(offset_src[pos.z]);
+        
+        {
+            int4 w0 = w % (src1_size.s3 * src1_size.s4);
+            int4 h0 = h % src1_size.s2;
+            int4 c0 = c % src1_size.s1;
+            int4 n0 = n % src1_size.s0;
+            int* w0_ptr = (int*)&w0;
+            int* h0_ptr = (int*)&h0;
+            int* c0_ptr = (int*)&c0;
+            int* n0_ptr = (int*)&n0;
+            for(int i = 0; i < 4; ++i){
+                int c4offset = ((n0_ptr[i] * src1_size.s1 + c0_ptr[i]) * src1_size.s2 + h0_ptr[i]) * src1_size.s3 * src1_size.s4 + w0_ptr[i];
+                int wc4 = c4offset % src1C4_size.x; c4offset /= src1C4_size.x;
+                int hc4 = c4offset % src1C4_size.y; c4offset /= src1C4_size.y;
+                int cc4 = c4offset % src1C4_size.z; c4offset /= src1C4_size.z;
+                int nc4 = c4offset % src1C4_size.w;
+                int cc4_offset = cc4 / 4;
+                int cc4_remain = cc4 % 4;
+                in1_ptr[i] = input1[((((nc4 * src1_channel_block) + cc4_offset) * src1C4_size.y + hc4) * src1C4_size.x + wc4) * 4 + cc4_remain];
+            }
         }
-        int2 offset = index * steps;
-        output[offset.x + stride_dst.w + x * stride_dst.x + y * stride_dst.y + pos.y * stride_dst.z] = input[offset.y + stride_src.w + x * stride_src.x + y * stride_src.y + pos.y * stride_src.z];
+        
+        FLOAT4 out = CONVERT_FLOAT4(LOOP_BINARY_OPERATOR);
+        vstore4(out, 0, output + ((((no * channel_block) + co) * dst_height + ho) * dst_width + wo) * 4);
     }
 }
+#endif

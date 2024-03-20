@@ -10,6 +10,7 @@
 #define VulkanBackend_hpp
 
 #include <map>
+#include <MNN/ErrorCode.hpp>
 #include "MNN_generated.h"
 #include "VulkanRuntime.hpp"
 namespace MNN {
@@ -27,11 +28,14 @@ public:
     virtual void onExecuteBegin() const override;
     virtual void onExecuteEnd() const override;
     virtual void onResizeBegin() override;
-    virtual void onResizeEnd() override;
+    virtual ErrorCode onResizeEnd() override;
     virtual void onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) const override;
     virtual const Runtime* getRuntime() override {
         return mRuntime;
     }
+    virtual int onSync(Tensor::MapType mtype, bool toCpu, const Tensor* dstTensor) override;
+
+    const VulkanPipelineFactory* getPipelineFactory() const;
     const VulkanPipeline* getPipeline(const std::string& key, const std::vector<VkDescriptorType>& types,
                                       const std::vector<uint32_t>& localSize = std::vector<uint32_t>()) const;
 
@@ -43,6 +47,15 @@ public:
     }
     BufferAllocator* getDynamicMemoryPool() const {
         return mDynamicBufferPool.get();
+    }
+    virtual bool onGetTensorInfo(const Tensor* tensor, void* dstInfo) override;
+    
+    std::vector<uint32_t> autoTunePipeline(const VulkanPipeline* pipeline, SharedPtr<VulkanLayout::DescriptorSet> des, std::vector<int> gws);
+    
+    float getPipelineTime(const VulkanPipeline* pipeline, SharedPtr<VulkanLayout::DescriptorSet> des, std::vector<int> groupSize);
+
+    bool isSupportAutotune(){
+        return mUseAutoTune;
     }
 
     class Creator {
@@ -76,12 +89,16 @@ public:
     VULKAN_TENSOR getBuffer(const Tensor* tensor) const;
     std::shared_ptr<VulkanBuffer> allocUniform(const void* src = nullptr, int size = 0);
     void recycleUniform(std::shared_ptr<VulkanBuffer> buffer);
+    void copyToGPUBuffer(const void* src, VkBuffer buffer, VkDeviceSize size, VkDeviceSize offset) const;
 
-private:
     const VulkanDevice& device() const;
+private:
     void _finish() const;
+    void _requireHostBuffer(size_t size) const;
+    mutable std::shared_ptr<VulkanBuffer> mHostBuffer;
 
     std::shared_ptr<VulkanCommandPool::Buffer> mCmdBuffer;
+    std::shared_ptr<VulkanCommandPool::Buffer> mCmdBufferForCopy;
     std::shared_ptr<BufferAllocator> mDynamicBufferPool;
 
     mutable std::vector<VkCommandBuffer> mCmdBuffers;
@@ -90,6 +107,7 @@ private:
 
     bool mDirect;
     const VulkanRuntime* mRuntime;
+    bool mUseAutoTune = true;
 };
 
 

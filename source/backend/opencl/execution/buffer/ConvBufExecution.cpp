@@ -14,6 +14,7 @@
 #include "core/ConvolutionCommon.hpp"
 #include "core/Backend.hpp"
 #include "RasterBufExecution.hpp"
+#include "ConvBufLowMemoryExecution.hpp"
 
 namespace MNN {
 namespace OpenCL {
@@ -25,10 +26,15 @@ std::pair<std::vector<uint32_t>,  uint32_t> ConvBufCommonExecution::gws2dLwsTune
     MNN_ASSERT(maxWorkItemSizes.size() >= 2);
     
     auto& tunedLws = runtime->tunedLwsMap();
+    auto& tuneLws = runtime->getTuneLwsMap();
     std::pair<std::string, std::vector<uint32_t>> info = std::make_pair(kernelName, gws);
     if (tunedLws.find(info) != tunedLws.end()) {
         //printf("ConvBuf2dGeneralLocalWS Found! gws:%d %d lws:%d %d\n", gws[0], gws[1], tunedLws[info][0], tunedLws[info][1]);
         return tunedLws[info];
+    }
+    std::pair<std::vector<uint32_t>, uint32_t> tuneLwsRes;
+    if(localWSTune(tuneLws, gws, kernelName, tuneLwsRes)){
+        return tuneLwsRes;
     }
     
     std::vector<uint32_t> lws(3, 1);
@@ -191,13 +197,15 @@ std::pair<std::vector<uint32_t>,  uint32_t> ConvBufCommonExecution::gws2dLwsTune
         min_cost = (int)mOpenCLBackend->getOpenCLRuntime()->getCostTime(&event);
     }
     
-    if (tunedLws.find(info) == tunedLws.end()) {
+    if (tunedLws.find(info) == tunedLws.end() && runtime->getCLTuneLevel() != None) {
         //printf("ConvBuf2dGeneralLocalWS %d Insert! gws:%d %d, lws:%d %d, time:%dus\n", (int)tunedLws.size(), gws[0], gws[1], lws_prefer[0], lws_prefer[1], min_cost);
         tunedLws.insert(std::make_pair(info, std::make_pair(lws_prefer, min_cost)));
     }
     return std::make_pair(lws_prefer, min_cost);
 }
-
+ConvBufCommonExecution::ConvBufCommonExecution(Backend *backend) : Execution(backend) {
+    mOpenCLBackend = static_cast<OpenCLBackend *>(backend);
+}
 ConvBufCommonExecution::ConvBufCommonExecution(const Convolution2D *conv2dParams, Backend *backend) : Execution(backend) {
     auto openclBackend       = (OpenCLBackend *)backend;
     int biasSize             = conv2dParams->common()->outputCount();
@@ -234,8 +242,9 @@ ConvBufCommonExecution::ConvBufCommonExecution(const Convolution2D *conv2dParams
 }
 
 ConvBufCommonExecution::~ConvBufCommonExecution() {
-    MNN_ASSERT(nullptr != mBias);
-    backend()->onReleaseBuffer(mBias.get(), Backend::STATIC);
+    if (mBias) {
+        backend()->onReleaseBuffer(mBias.get(), Backend::STATIC);
+    }
 }
 
 void ConvBufExecution::setConv1x1WeightBuffer(int packCout, int packCin, const float* filterDataPtr) {
@@ -325,7 +334,7 @@ ConvBufExecution::ConvBufExecution(const std::vector<Tensor *> &inputs, const st
         mRasterExe.reset(new RasterBufExecution({mFilter.get()}, op, mOpenCLBackend));
     } else {
         int weightSize   = 0;
-        ConvolutionCommon::getConvParameters(&quanCommon, conv2dParams, &mFilterDataPtr, &weightSize);
+        ConvolutionCommon::getConvParameters(&quanCommon, backend, conv2dParams, &mFilterDataPtr, &weightSize);
         //select opt conv method
         mConv1x1Opt = (mKernelHeight == mKernelWidth && mKernelHeight == 1 && mPaddings[0] == 0 &&
         mPaddings[1] == 0 && mStrides[0] == 1 && mStrides[1] == 1 && inputs[0]->width() >= 4);
@@ -426,7 +435,7 @@ ErrorCode ConvBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
         }
         mRasterExe->onResize({}, {mFilter.get()});
     }
-
+    mOpenCLBackend->startRecord(mRecording);
     std::vector<int> inputShape  = tensorShapeFormat(input);
     std::vector<int> outputShape = tensorShapeFormat(output);
     const int height             = outputShape.at(1);
@@ -517,7 +526,7 @@ ErrorCode ConvBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
         int min_index  = min_cost.second;
         if(min_index >= c8_index_start) {//if best kernel is "conv_2d_1x1_c8h1w4", set weight packCout to 8
             int weightSize   = 0;
-            ConvolutionCommon::getConvParameters(&quanCommon, mConv2dParams, &mFilterDataPtr, &weightSize);
+            ConvolutionCommon::getConvParameters(&quanCommon, backend(), mConv2dParams, &mFilterDataPtr, &weightSize);
             setConv1x1WeightBuffer(8, 4, mFilterDataPtr);
         }
         mGlobalWorkSize = {globalWorkSize[min_index][0], globalWorkSize[min_index][1]};
@@ -649,6 +658,8 @@ ErrorCode ConvBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
     if (inputs.size() > 1) {
         backend()->onReleaseBuffer(mFilter.get(), Backend::DYNAMIC);
     }
+    mOpenCLBackend->recordKernel2d(mKernel, mGlobalWorkSize, mLocalWorkSize);
+    mOpenCLBackend->endRecord(mRecording);
 #ifdef LOG_VERBOSE
     MNN_PRINT("end ConvExecution onResize !\n");
 #endif
@@ -676,6 +687,14 @@ ErrorCode ConvBufExecution::onExecute(const std::vector<Tensor *> &inputs, const
     runKernel2D(mKernel, mGlobalWorkSize, mLocalWorkSize, mOpenCLBackend->getOpenCLRuntime(), &event);
     mOpenCLBackend->getOpenCLRuntime()->pushEvent({"ConvBuf2D", event});
 #else
+    if(mOpenCLBackend->isUseRecordQueue()){
+        if(mOpenCLBackend->isDevideOpRecord())
+            mOpenCLBackend->addRecord(mRecording);
+#ifdef LOG_VERBOSE
+        MNN_PRINT("End ConvExecution onExecute... \n");
+#endif
+        return NO_ERROR;
+    }
     runKernel2D(mKernel, mGlobalWorkSize, mLocalWorkSize, mOpenCLBackend->getOpenCLRuntime());
 #endif
     
@@ -690,6 +709,30 @@ public:
     virtual ~ConvolutionBufCreator() = default;
     virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs,
                                 const MNN::Op *op, Backend *backend) const override {
+        auto conv2D  = op->main_as_Convolution2D();
+        auto input   = inputs[0];
+        auto output  = outputs[0];
+        auto padding = ConvolutionCommon::convolutionPad(inputs[0], outputs[0], conv2D->common());
+        std::vector<int> inputShape  = tensorShapeFormat(input);
+        std::vector<int> outputShape = tensorShapeFormat(output);
+        const int outputChannel         = outputShape.at(3);
+        const int inputChannels = inputShape.at(3);
+#ifdef MNN_LOW_MEMORY
+        {
+            auto conv2dParams = op->main_as_Convolution2D();
+            if ((static_cast<OpenCLBackend *>(backend)->getMemory() == BackendConfig::Memory_Low) && (conv2dParams->quanParameter() != nullptr)) {
+                if (((conv2dParams->quanParameter()->type() == 4) ||
+                     (conv2dParams->quanParameter()->type() == 1) ||
+                     (conv2dParams->quanParameter()->type() == 2))) {
+                    // Todo: support int4 inputchannel % 4 not equal 4
+                    return new ConvBufLowMemoryExecution(inputs, outputs, op, backend);
+                } else {
+                    MNN_ERROR("OpenCL Conv buf low memory init error. For Opencl Backend, only support low memory mode of int8 or int4 dequantization currently.\n");
+                    MNN_ASSERT(false);
+                }
+            }
+        }  
+#endif
         if (nullptr != op->main_as_Convolution2D()->quanParameter()) {
             auto quan = op->main_as_Convolution2D()->quanParameter();
             if (1 == quan->type() || 2 == quan->type()) {
@@ -698,6 +741,11 @@ public:
                     return nullptr;
                 }
             }
+        }
+        
+        if(op->main_as_Convolution2D()->common()->group() > 1){
+            // Don't support group > 1 now
+            return nullptr;
         }
         
         if (inputs.size() > 1) {
@@ -710,14 +758,6 @@ public:
             }
             return new ConvBufExecution(inputs, outputs, op, backend);
         }
-        auto conv2D  = op->main_as_Convolution2D();
-        auto input   = inputs[0];
-        auto output  = outputs[0];
-        auto padding = ConvolutionCommon::convolutionPad(inputs[0], outputs[0], conv2D->common());
-        std::vector<int> inputShape  = tensorShapeFormat(input);
-        std::vector<int> outputShape = tensorShapeFormat(output);
-        const int outputChannel         = outputShape.at(3);
-        const int inputChannels = inputShape.at(3);
 
         if (ConvBufWinograd::valid(conv2D->common(), inputs[0], outputs[0], static_cast<OpenCLBackend *>(backend)->getOpenCLRuntime()->getGpuType() == INTEL)) {
             std::vector<int> inputShape = tensorShapeFormat(input);
@@ -749,7 +789,7 @@ public:
     }
 };
 
-OpenCLCreatorRegister<ConvolutionBufCreator> __convBuf_op(OpType_Convolution, BUFFER);
+REGISTER_OPENCL_OP_CREATOR(ConvolutionBufCreator, OpType_Convolution, BUFFER);
 
 } // namespace OpenCL
 } // namespace MNN

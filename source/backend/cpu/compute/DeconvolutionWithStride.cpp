@@ -163,7 +163,7 @@ static void _gemmAndIm2col(const DeconvolutionWithStride::ComputeUnit& unit, int
 }
 
 DeconvolutionWithStride::DeconvolutionWithStride(const Tensor* input, const Op* convOp, Backend* b)
-    : CPUDeconvolutionCommon(input, convOp, b) {
+    : CPUDeconvolutionCommon(input, convOp, b, false) {
     auto conv2D = convOp->main_as_Convolution2D();
     MNN_ASSERT(nullptr != conv2D->bias());
     auto common     = conv2D->common();
@@ -177,7 +177,7 @@ DeconvolutionWithStride::DeconvolutionWithStride(const Tensor* input, const Op* 
     int tempWeightSize   = 0;
     int srcCount = 0;
     std::shared_ptr<ConvolutionCommon::Int8Common> quanCommon;
-    ConvolutionCommon::getConvParameters(&quanCommon, conv2D, &tempWeight, &tempWeightSize);
+    ConvolutionCommon::getConvParameters(&quanCommon, b, conv2D, &tempWeight, &tempWeightSize);
     srcCount = tempWeightSize / kx / ky / outputCount;
 
     int sy = common->strideY();
@@ -270,7 +270,7 @@ void DeconvolutionWithStride::_extract(const Op* convOp) {
     int tempWeightSize   = 0;
     int srcCount = 0;
     std::shared_ptr<ConvolutionCommon::Int8Common> quanCommon;
-    ConvolutionCommon::getConvParameters(&quanCommon, conv2D, &tempWeight, &tempWeightSize);
+    ConvolutionCommon::getConvParameters(&quanCommon, backend(), conv2D, &tempWeight, &tempWeightSize);
     srcCount = tempWeightSize / kx / ky / outputCount;
     
     std::shared_ptr<Tensor> weightWrap(

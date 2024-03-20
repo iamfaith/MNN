@@ -99,6 +99,8 @@ public:
 
     virtual void onExecuteEnd() const override;
 
+    virtual ErrorCode onResizeEnd() override { return NO_ERROR; }
+
     /// get execution
     virtual Execution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                 const MNN::Op* op) override;

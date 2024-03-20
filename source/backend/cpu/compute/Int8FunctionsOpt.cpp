@@ -27,7 +27,7 @@ void MNNLineDepthWiseInt8AddBiasScaleUnit(int8_t* dst, const int8_t* src, const 
 void MNNMaxPoolInt8(int8_t* dst, int8_t* src, size_t outputWidth, size_t inputWidth, size_t kernelx, size_t kernely, size_t stridesx);
 
 void MNNAvgPoolInt8(int8_t* dst, int8_t* src, size_t outputWidth, size_t inputWidth, size_t kernelx, size_t kernely, size_t stridesx, ssize_t paddingx, ssize_t factor);
-
+void MNNReluWithSlopeChannelInt8(int8_t* dst, const int8_t* src, const float* slope, size_t planeNumber, size_t depthQuad, QuanPrePostParameters *params);
 #if defined(__aarch64__) // aarch32 sdot workaround
 void MNNGemmInt8AddBiasScale_ARMV82_Unit(int8_t* dst, const int8_t* src, const int8_t* weight, size_t src_depth_quad, size_t dst_step, size_t dst_depth_quad,
                                         const QuanPostTreatParameters* post, size_t realDstCount);
@@ -1453,7 +1453,9 @@ static void MNNGemmInt8AddBiasScale_16x4_Unit(int8_t* dst, const int8_t* src, co
                 for (int j = 0; j < GEMM_INT8_UNIT; ++j) {
                     const auto weight_j = weight_sz + j * GEMM_INT8_SRC_UNIT;
                     for (int i = 0; i < GEMM_INT8_SRC_UNIT; ++i) {
+//                        if (j == 2) printf("%d, %d\n", (int32_t)src_z[i], (int32_t)weight_j[i]);
                         dstTemp[j] += (int32_t)src_z[i] * (int32_t)weight_j[i];
+//                        if (j == 0) printf("%d\n", dstTemp[j]);
                     }
                 }
             }
@@ -1466,6 +1468,29 @@ static void MNNGemmInt8AddBiasScale_16x4_Unit(int8_t* dst, const int8_t* src, co
                 } else {
                     float value = (float)(dstTemp[j] + bias_dz[j]) * scale_dz[j];
                     ((float*)dst_x)[j] = value;
+                }
+            }
+        }
+    }
+}
+
+static void MNNReluWithSlopeChannelInt8(int8_t* dst, const int8_t* src, const float* slope, size_t planeNumber, size_t depthQuad, QuanPrePostParameters *params) {
+    float mulVal = 0.f;
+    float inputScale = params->inputScale[0];
+    float outputScale = params->outputScale[0];
+    int32_t inputZero = static_cast<int32_t>(params->inputZeroPoint[0]);
+    int32_t outputZero = static_cast<int32_t>(params->outputZeroPoint[0]);
+    for (int j = 0;j < depthQuad; ++j) {
+        const float* slopeZ = slope + 4 * j;
+        const int8_t* srcZ = src + 4 * j * planeNumber;
+        int8_t* dstZ = dst + 4 * j * planeNumber;
+        for (int i = 0; i < planeNumber; ++i) {
+            for (int c = 0; c < 4; ++c) {
+                if (srcZ[4 * i + c] < 0) {
+                    mulVal = (srcZ[4 * i + c] - inputZero) * slopeZ[c];
+                    dstZ[4 * i + c] = ALIMIN(ALIMAX(static_cast<int32_t>(roundf(mulVal)) + outputZero, params->minValue), params->maxValue);
+                } else {
+                    dstZ[4 * i + c] = srcZ[4 * i + c];
                 }
             }
         }
@@ -1620,22 +1645,19 @@ void MNNBinaryAddInt8 (int8_t* outputRaw, const int8_t* inputRaw0, const int8_t*
     const int minValue = static_cast<int32_t>(params->minValue) + offset;
     for (int i = 0; i < elementSize; ++i) {
         if (needBroadcast == 0) {
-            int32_t inp0 = static_cast<int32_t>(inputData0[0] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<int32_t>(inputScalesInt32[0]);
-            int32_t inp1 = static_cast<int32_t>(inputData1[i] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
+            float inp0 = static_cast<int32_t>(inputData0[0] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<float>(inputScalesFp32[0]);
+           float inp1 = static_cast<int32_t>(inputData1[i] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<float>(inputScalesFp32[1]);
             sum =  inp0 + inp1;
         } else if (needBroadcast == 1) {
-            int32_t inp0 = static_cast<int32_t>(inputData0[i] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<int32_t>(inputScalesInt32[0]);
-            int32_t inp1 = static_cast<int32_t>(inputData1[0] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
+            float inp0 = static_cast<int32_t>(inputData0[i] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<float>(inputScalesFp32[0]);
+           float inp1 = static_cast<int32_t>(inputData1[0] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<float>(inputScalesFp32[1]);
             sum = inp0 + inp1;
         } else {
-            int32_t inp0 = static_cast<int32_t>(inputData0[i] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<int32_t>(inputScalesInt32[0]);
-            int32_t inp1 = static_cast<int32_t>(inputData1[i] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
-            sum = inp0 + inp1;
+           float inp0 = static_cast<int32_t>(inputData0[i] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<float>(inputScalesFp32[0]);
+           float inp1 = static_cast<int32_t>(inputData1[i] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<float>(inputScalesFp32[1]);
+           sum = inp0 + inp1;
         }
-        int value  = (sum + (1<<15)) / (1 << 16) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
-        if (sum < 0) {
-            value  = (sum - (1<<15)) / (1 << 16) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
-        }
+        int value = (int)roundf(sum * inputScalesFp32[2]) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
         if (value > maxValue) {
             value = maxValue;
         }
@@ -1663,22 +1685,19 @@ void MNNBinarySubInt8 (int8_t* outputRaw, const int8_t* inputRaw0, const int8_t*
     const int minValue = static_cast<int32_t>(params->minValue) + offset;
     for (int i = 0; i < elementSize; ++i) {
         if (needBroadcast == 0) {
-            int32_t inp0 = static_cast<int32_t>(inputData0[0] - offset - params->inputZeroPoint[0]) * static_cast<int32_t>(inputScalesInt32[0]);
-            int32_t inp1 = static_cast<int32_t>(inputData1[i] - offset - params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
+           float inp0 = static_cast<int32_t>(inputData0[0] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<float>(inputScalesFp32[0]);
+           float inp1 = static_cast<int32_t>(inputData1[i] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<float>(inputScalesFp32[1]);
             res = inp0 - inp1;
         } else if (needBroadcast == 1) {
-            int32_t inp0 = static_cast<int32_t>(inputData0[i] - offset - params->inputZeroPoint[0]) * static_cast<int32_t>(inputScalesInt32[0]);
-            int32_t inp1 = static_cast<int32_t>(inputData1[0] - offset - params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
+            float inp0 = static_cast<int32_t>(inputData0[i] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<float>(inputScalesFp32[0]);
+            float inp1 = static_cast<int32_t>(inputData1[0] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<float>(inputScalesFp32[1]);
             res = inp0 - inp1;
         } else {
-            int32_t inp0 = static_cast<int32_t>(inputData0[i] - offset - params->inputZeroPoint[0]) * static_cast<int32_t>(inputScalesInt32[0]);
-            int32_t inp1 = static_cast<int32_t>(inputData1[i] - offset - params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
+            float inp0 = static_cast<int32_t>(inputData0[i] - offset - (int32_t)params->inputZeroPoint[0]) * static_cast<float>(inputScalesFp32[0]);
+            float inp1 = static_cast<int32_t>(inputData1[i] - offset - (int32_t)params->inputZeroPoint[1]) * static_cast<float>(inputScalesFp32[1]);
             res = inp0 - inp1;
         }
-        int value  = (res + (1<<15)) / (1 << 16) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
-        if (res < 0) {
-            value  = (res - (1<<15)) / (1 << 16) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
-        }
+        int value = (int)roundf(res * inputScalesFp32[2]) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
         if (value > maxValue) {
             value = maxValue;
         }
@@ -1758,9 +1777,9 @@ void MNNBinaryMinInt8 (int8_t* outputRaw, const int8_t* inputRaw0, const int8_t*
             int32_t inp1 = static_cast<int32_t>(inputData1[i] - offset - params->inputZeroPoint[1]) * static_cast<int32_t>(inputScalesInt32[1]);
             res = std::min(inp0, inp1);
         }
-        int value  = (res + (1<<15)) / (1 << 16) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
+        int value  = roundf((res + (1<<15)) / (1 << 16)) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
         if (res < 0) {
-            value  = (res - (1<<15)) / (1 << 16) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
+            value  = roundf((res - (1<<15)) / (1 << 16)) + offset + static_cast<int32_t>(params->outputZeroPoint[0]);
         }
         if (value > maxValue) {
             value = maxValue;
@@ -1883,9 +1902,9 @@ void MNNScaleAndAddBiasInt8(int8_t* dst, const int8_t* src, const int32_t* bias,
             for (int i = 0; i < pack; ++i) {
                 int32_t val = static_cast<int32_t>(srcX[i] - intputZeroPointValue) * alphaZ[i] + biasZ[i];
 
-                int valOut  = (val + (1<<d)) / (1 << mShiftBits) + outputZeroPointValue;
+                int valOut  = roundf((val + (1<<d)) / (1 << mShiftBits)) + outputZeroPointValue;
                 if (val < 0) {
-                    valOut  = (val - (1<<d)) / (1 << mShiftBits) + outputZeroPointValue;
+                    valOut  = roundf((val - (1<<d)) / (1 << mShiftBits)) + outputZeroPointValue;
                 }
 
                 if (valOut > maxValue + offset) {
@@ -2108,6 +2127,9 @@ void MNNCoreInt8FunctionInit() {
     
     // Norm
     gCoreFunc->MNNNormInt8 = MNNNormInt8;
+
+    // ReluWithSlopeChannel
+    gCoreFunc->MNNReluWithSlopeChannelInt8 = MNNReluWithSlopeChannelInt8;
 
 #if defined(__aarch64__)
     auto core = MNNGetCoreFunctions();

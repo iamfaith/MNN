@@ -30,13 +30,19 @@ PoolBufExecution::PoolBufExecution(const std::vector<Tensor *> &inputs, const MN
     mPaddings[0] = mPoolParams->padY() * 2;
     mPaddings[1] = mPoolParams->padX() * 2;
     mPadType     = mPoolParams->padType();
-    if (mPadType == PoolPadType_VALID) {
-        mPaddings[0] = 0;
-        mPaddings[1] = 0;
-    }
     if (inputs[0]->channel() >= 16) {
         TensorUtils::setTensorChannelPack(inputs[0], 16);
     }
+    auto kernel = mOpenCLBackend->getOpenCLRuntime()->buildKernel("pooling_buf", "global_pooling_buf", {"-DLOCAL_SIZE=512"});
+    mMaxWorkGroupSize = static_cast<uint32_t>(mOpenCLBackend->getOpenCLRuntime()->getMaxWorkGroupSize(kernel));
+}
+
+int PoolBufExecution::getLocalSize(int size, int maxGroupSize){
+    int local_size = 1;
+    while(local_size * 2 <= maxGroupSize && local_size * 2 <= size){
+        local_size *= 2;
+    }
+    return local_size;
 }
 
 ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
@@ -45,6 +51,8 @@ ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
 #endif
     auto input  = inputs[0];
     auto output = outputs[0];
+    bool returnRedice = outputs.size() == 2;
+    auto redice = returnRedice ? outputs[1] : outputs[0];
 
     auto runtime = mOpenCLBackend->getOpenCLRuntime();
 #ifdef MNN_SUPPORT_INTEL_SUBGROUP
@@ -52,11 +60,20 @@ ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
         return SubgrouponResize(inputs, outputs);
     }
 #endif /* MNN_SUPPORT_INTEL_SUBGROUP */
+    mOpenCLBackend->startRecord(mRecording);
+    std::set<std::string> buildOptions;
+    std::string kernelName = "pooling";
+    int local_size;
+    
     if (mPoolParams->isGlobal()) {
         std::vector<int> inputShape = tensorShapeFormat(inputs[0]);
         mKernels                    = {inputShape.at(1), inputShape.at(2)};
         mStrides                    = {inputShape.at(1), inputShape.at(2)};
         mPaddings                   = {0, 0};
+        kernelName                  = "global_pooling_buf";
+        auto MaxLocalSize = std::min(runtime->getMaxWorkItemSizes()[0], mMaxWorkGroupSize);
+        local_size = getLocalSize(inputShape.at(1) * inputShape.at(2), MaxLocalSize);
+        buildOptions.emplace("-DLOCAL_SIZE=" + std::to_string(local_size));
     }
 
     if (mPadType == PoolPadType_SAME) {
@@ -65,6 +82,21 @@ ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
 
         mPaddings[0] = padNeededHeight;
         mPaddings[1] = padNeededWidth;
+    }else if (mPoolParams->padType() == PoolPadType_VALID) {
+        mPaddings[0] = mPaddings[1] = 0;
+    }
+    
+    auto countType         = mPoolParams->countType();
+    if (mPoolParams->pads() != nullptr && mPadType == PoolPadType_CAFFE) {
+        mPadType = PoolPadType_VALID;
+    }
+    
+    if (countType == MNN::AvgPoolCountType_DEFAULT) {
+        if (mPadType == MNN::PoolPadType_CAFFE) {
+            countType = MNN::AvgPoolCountType_INCLUDE_PADDING;
+        } else {
+            countType = MNN::AvgPoolCountType_EXCLUDE_PADDING;
+        }
     }
 
     MNN_ASSERT(mDilations[0] == 1 && mDilations[1] == 1);
@@ -80,12 +112,15 @@ ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
     const int inputHeight = inputShape.at(1);
     const int inputWidth  = inputShape.at(2);
     int channelBlocks = (channels + 3) / 4;
-    
-    std::set<std::string> buildOptions;
-    std::string kernelName = "pooling";
 
     if (mPoolType == PoolType_AVEPOOL) {
         buildOptions.emplace("-DPOOL_AVG");
+        if(countType == MNN::AvgPoolCountType_INCLUDE_PADDING){
+            buildOptions.emplace("-DCOUNT_INCLUDE_PADDING");
+        }
+    }
+    if(returnRedice){
+        buildOptions.emplace("-DRETURN_REDICE");
     }
     
     mKernel           = runtime->buildKernel("pooling_buf", kernelName, buildOptions);
@@ -96,6 +131,19 @@ ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
         static_cast<uint32_t>(batch * outputHeight),
         static_cast<uint32_t>(channelBlocks),
     };
+    
+    if (mPoolParams->isGlobal()) {
+        mGlobalWorkSize = {
+            static_cast<uint32_t>(local_size),
+            static_cast<uint32_t>(channelBlocks),
+            static_cast<uint32_t>(batch),
+        };
+        mLocalWorkSize = {
+            static_cast<uint32_t>(local_size),
+            static_cast<uint32_t>(1),
+            static_cast<uint32_t>(1),
+        };
+    }
 
     int inputImageShape[2] = {inputHeight, inputWidth};
     int outputImageShape[2] = {outputHeight, outputWidth};
@@ -115,13 +163,17 @@ ErrorCode PoolBufExecution::onResize(const std::vector<Tensor *> &inputs, const 
     ret |= mKernel.setArg(idx++, sizeof(strideShape), strideShape);
     ret |= mKernel.setArg(idx++, sizeof(kernelShape), kernelShape);
     ret |= mKernel.setArg(idx++, openCLBuffer(output));
+    ret |= mKernel.setArg(idx++, openCLBuffer(redice));
     ret |= mKernel.setArg(idx++, channelBlocks);
     MNN_CHECK_CL_SUCCESS(ret, "setArg PoolBufExecution");
     
     std::string kernelNameTune = "pooling_buf";
-    mLocalWorkSize =
-    localWS3DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), kernelNameTune, mKernel).first;
-
+    if (!mPoolParams->isGlobal()){
+        mLocalWorkSize = localWS3DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), kernelNameTune, mKernel).first;
+    }
+    
+    mOpenCLBackend->recordKernel3d(mKernel, mGlobalWorkSize, mLocalWorkSize);
+    mOpenCLBackend->endRecord(mRecording);
 #ifdef LOG_VERBOSE
     MNN_PRINT("end PoolBufExecution onResize !\n");
 #endif
@@ -135,6 +187,11 @@ ErrorCode PoolBufExecution::SubgrouponResize(const std::vector<Tensor *> &inputs
 #endif
     auto input  = inputs[0];
     auto output = outputs[0];
+    bool returnRedice = outputs.size() == 2;
+    auto redice = returnRedice ? outputs[1] : outputs[0];
+    
+    auto runtime = mOpenCLBackend->getOpenCLRuntime();
+    mOpenCLBackend->startRecord(mRecording);
 
     if (mPoolParams->isGlobal()) {
         std::vector<int> inputShape = tensorShapeFormat(inputs[0]);
@@ -180,10 +237,12 @@ ErrorCode PoolBufExecution::SubgrouponResize(const std::vector<Tensor *> &inputs
     std::set<std::string> buildOptions;
 
     std::string KernelName = "pooling_c" + std::to_string(input_c_pack) + "_c" + std::to_string(output_c_pack);
-    auto runtime           = mOpenCLBackend->getOpenCLRuntime();
 
     if (mPoolType == PoolType_AVEPOOL) {
         buildOptions.emplace("-DPOOL_AVG");
+    }
+    if(returnRedice){
+        buildOptions.emplace("-DRETURN_REDICE");
     }
     int input_line_size = mStrides[1] * (8 - 1) + mKernels[1];
     buildOptions.emplace("-DINPUT_LINE_SIZE=" + std::to_string(input_line_size));
@@ -221,6 +280,7 @@ ErrorCode PoolBufExecution::SubgrouponResize(const std::vector<Tensor *> &inputs
     ret |= mKernel.setArg(idx++, sizeof(outputImageShape), outputImageShape);
     ret |= mKernel.setArg(idx++, sizeof(paddingShape), paddingShape);
     ret |= mKernel.setArg(idx++, openCLBuffer(output));
+    ret |= mKernel.setArg(idx++, openCLBuffer(redice));
     ret |= mKernel.setArg(idx++, channels);
     ret |= mKernel.setArg(idx++, in_channel_block);
     ret |= mKernel.setArg(idx++, out_channel_block);
@@ -236,6 +296,8 @@ ErrorCode PoolBufExecution::SubgrouponResize(const std::vector<Tensor *> &inputs
     } else {
         mLocalWorkSize = localWS3DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), kernelNameTune, mKernel).first;
     }
+    mOpenCLBackend->recordKernel3d(mKernel, mGlobalWorkSize, mLocalWorkSize);
+    mOpenCLBackend->endRecord(mRecording);
 
 #ifdef LOG_VERBOSE
     MNN_PRINT("end PoolBufExecution onResize !\n");
@@ -256,6 +318,14 @@ ErrorCode PoolBufExecution::onExecute(const std::vector<Tensor *> &inputs, const
     
     mOpenCLBackend->getOpenCLRuntime()->pushEvent({"Pooling", event});
 #else
+    if(mOpenCLBackend->isUseRecordQueue()){
+        if(mOpenCLBackend->isDevideOpRecord())
+            mOpenCLBackend->addRecord(mRecording);
+#ifdef LOG_VERBOSE
+        MNN_PRINT("End PoolBufExecution onExecute... \n");
+#endif
+        return NO_ERROR;
+    }
     run3DKernelDefault(mKernel, mGlobalWorkSize, mLocalWorkSize,
                        mOpenCLBackend->getOpenCLRuntime());
 #endif
@@ -266,7 +336,9 @@ ErrorCode PoolBufExecution::onExecute(const std::vector<Tensor *> &inputs, const
     return NO_ERROR;
 }
 
-OpenCLCreatorRegister<TypedCreator<PoolBufExecution>> __PoolBuf_op(OpType_Pooling, BUFFER);
+using PoolBufCreator = TypedCreator<PoolBufExecution>;
+REGISTER_OPENCL_OP_CREATOR(PoolBufCreator, OpType_Pooling, BUFFER);
+
 } // namespace OpenCL
 } // namespace MNN
 #endif /* MNN_OPENCL_BUFFER_CLOSED */

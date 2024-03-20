@@ -55,6 +55,8 @@ void MNNFunctionInit() {
         coreFunction->MNNPackedMatMulRemain_int4 = _SSE_MNNPackedMatMulRemain_int4;
         coreFunction->MNNPackedMatMul_int8       = _SSE_MNNPackedMatMul_int8;
         coreFunction->MNNPackedMatMulRemain_int8 = _SSE_MNNPackedMatMulRemain_int8;
+        coreFunction->MNNGemmHybridInt4 = _SSE_MNNGemmHybridInt4;
+        coreFunction->MNNGemmHybridInt8 = _SSE_MNNGemmHybridInt8;
 #endif
         coreFunction->MNNPackC4ForMatMul_A  = _SSE_MNNPackC4ForMatMul_A;
         coreFunction->MNNPackForMatMul_B    = _SSE_MNNPackForMatMul_B;
@@ -125,6 +127,7 @@ void MNNInt8FunctionInit() {
     core->MNNAvgPoolInt8 = MNNAvgPoolUint8;
     core->MNNMaxPoolInt8 = MNNMaxPoolInt8_;
     core->MNNNormInt8    = _SSE_MNNNormInt8;
+    core->MNNReluWithSlopeChannelInt8 = _SSE_MNNReluWithSlopeChannelInt8;
     if (cpuFlags & libyuv::kCpuHasSSE41) {
         core->MNNFloat2Int8 = _SSE_MNNFloat2Int8;
         core->MNNInt8ScaleToFloat = _SSE_MNNInt8ScaleToFloat;

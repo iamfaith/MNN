@@ -20,6 +20,7 @@ MatMulBufExecution::MatMulBufExecution(const std::vector<Tensor *> &inputs, cons
 }
 ErrorCode MatMulBufExecution::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
     auto runtime = mOpenCLBackend->getOpenCLRuntime();
+    mOpenCLBackend->startRecord(mRecording);
 
     Tensor *input0 = inputs[0];
     Tensor *input1 = inputs[1];
@@ -70,6 +71,7 @@ ErrorCode MatMulBufExecution::onResize(const std::vector<Tensor *> &inputs, cons
         ret |= mKernel.setArg(idx++, static_cast<int>(height));
         ret |= mKernel.setArg(idx++, static_cast<int>(heightblocks));
         ret |= mKernel.setArg(idx++, static_cast<int>(widthblocks));
+        ret |= mKernel.setArg(idx++, static_cast<int>(width));
         MNN_CHECK_CL_SUCCESS(ret, "setArg MatMulBufExecution mTransposeA");
 
         mLocalWorkSize = localWS2DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), mKernelName, mKernel).first;
@@ -94,9 +96,12 @@ ErrorCode MatMulBufExecution::onResize(const std::vector<Tensor *> &inputs, cons
         ret |= mKernel.setArg(idx++, static_cast<int>(outputChannel));
         ret |= mKernel.setArg(idx++, static_cast<int>(outputChannelBlocks));
         ret |= mKernel.setArg(idx++, static_cast<int>(widthblocks));
+        ret |= mKernel.setArg(idx++, static_cast<int>(width));
         MNN_CHECK_CL_SUCCESS(ret, "setArg MatMulBufExecution");
         mLocalWorkSize = localWS2DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), mKernelName, mKernel).first;
     }
+    mOpenCLBackend->recordKernel2d(mKernel, mGlobalWorkSize, mLocalWorkSize);
+    mOpenCLBackend->endRecord(mRecording);
     return NO_ERROR;
 }
 
@@ -114,6 +119,14 @@ ErrorCode MatMulBufExecution::onExecute(const std::vector<Tensor *> &inputs, con
     
         mOpenCLBackend->getOpenCLRuntime()->pushEvent({"MatmulBuf", event});
     #else
+    if(mOpenCLBackend->isUseRecordQueue()){
+        if(mOpenCLBackend->isDevideOpRecord())
+            mOpenCLBackend->addRecord(mRecording);
+#ifdef LOG_VERBOSE
+        MNN_PRINT("End MatMulBufExecution onExecute... \n");
+#endif
+        return NO_ERROR;
+    }
     runKernel2D(mKernel, mGlobalWorkSize, mLocalWorkSize, runtime, nullptr);
     #endif
     
@@ -138,7 +151,7 @@ public:
     }
 };
 
-OpenCLCreatorRegister<MatMulBufCreator> __matmulBuf_op(OpType_MatMul, BUFFER);
+REGISTER_OPENCL_OP_CREATOR(MatMulBufCreator, OpType_MatMul, BUFFER);
 
 } // namespace OpenCL
 } // namespace MNN

@@ -72,10 +72,10 @@ enum OpType : int {
     QuantizedConcat,
     QuantizedDepthwiseConv2D,
     QuantizedLogistic,
-    QuantizedMatMul,
+    RasterAndInterpolate,
     QuantizedMaxPool,
-    QuantizedRelu,
-    QuantizedRelu6,
+    Texture,
+    RasterDiff,
     QuantizedReshape,
     QuantizedSoftmax,
     QuantizeMaxMin,
@@ -185,6 +185,13 @@ enum OpType : int {
     // Use for self defined grad
     ZeroGrad,
 
+    // User define op
+    FmhaV2 = 300,
+    Fmhca = 301,
+    SeqLen2Spatial = 302,
+    SplitGeLU = 303,
+    GroupNorm = 304,
+
     Extra = 512,
     // quantization
     ConvInt8 = 513,
@@ -216,6 +223,14 @@ table Extra {
 
 table StringVec {
     data: [string];
+}
+
+table FmhaV2Param {
+    heads: int;
+}
+ 
+table FmhcaParam {
+    heads: int;
 }
 
 table WhileParam {
@@ -389,7 +404,10 @@ union OpParameter {
     GridSample,
     LoopParam,
     ImageProcessParam,
-    CumSum
+    CumSum,
+    GroupNorm,
+    FmhaV2Param,
+    FmhcaParam
 }
 
 table Op {

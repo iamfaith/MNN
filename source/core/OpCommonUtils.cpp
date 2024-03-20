@@ -14,6 +14,23 @@
 #include <fstream>
 
 namespace MNN {
+Tensor::DimensionType OpCommonUtils::convertDimType(MNN_DATA_FORMAT dimensionFormat) {
+    auto dimType = Tensor::CAFFE;
+    switch (dimensionFormat) {
+        case MNN_DATA_FORMAT_NCHW:
+            break;
+        case MNN_DATA_FORMAT_NC4HW4:
+            dimType = Tensor::CAFFE_C4;
+            break;
+        case MNN_DATA_FORMAT_NHWC:
+            dimType = Tensor::TENSORFLOW;
+            break;
+        default:
+            break;
+    }
+    return dimType;
+}
+
 void OpCommonUtils::loadBlobData(Backend* backend, const Op* op, char* ptr, int size) {
     if (OpParameter_Blob != op->main_type()) {
         return;
@@ -27,6 +44,9 @@ void OpCommonUtils::loadBlobData(Backend* backend, const Op* op, char* ptr, int 
     switch (b->dataType()) {
         case DataType_DT_FLOAT:
             result = (void*)b->float32s()->Data();
+            break;
+        case DataType_DT_BFLOAT16:
+            result = (void*)b->uint8s()->Data();
             break;
         case DataType_DT_INT32:
             result = (void*)b->int32s()->Data();
@@ -442,7 +462,8 @@ int OpCommonUtils::computeStride(int32_t* strides, const int* shape, int length)
     return stride;
 }
 
-bool OpCommonUtils::opNeedContent(int type, int index) {
+bool OpCommonUtils::opNeedContent(const MNN::Op* op, int index) {
+    int type = op->type();
     switch (type) {
         case OpType_ZerosLike:
         case OpType_ZeroGrad:
@@ -461,6 +482,35 @@ bool OpCommonUtils::opNeedContent(int type, int index) {
                 return false;
             }
             break;
+        case OpType_GridSample:
+            if (2 == index) {
+                return false;
+            }
+            break;
+#ifdef MNN_SUPPORT_RENDER
+        case OpType_RasterAndInterpolate:
+        {
+            if (0 == index) {
+                int type = 4;
+                if (op->main_type() == OpParameter_Extra) {
+                    auto extra = op->main_as_Extra();
+                    if (nullptr != extra->attr()) {
+                        for (int i=0; i<extra->attr()->size(); ++i) {
+                            auto attr = extra->attr()->GetAs<Attribute>(i);
+                            if (attr->key()->str() == "primitiveType") {
+                                type = attr->i();
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (type <= 4) {
+                    return false;
+                }
+            }
+            break;
+        }
+#endif
         default:
             break;
     }
@@ -523,13 +573,13 @@ bool OpCommonUtils::loadConvData(Backend* backend, const Op* op, std::unique_ptr
     auto biasBytes = conv2d->external()->Get(2);
     weightSize = static_cast<int>(weightBytes / sizeof(float));
     biasSize = static_cast<int>(biasBytes / sizeof(float));
-    weight.reset(Tensor::createDevice<float>({weightSize}));
-    bias.reset(Tensor::createDevice<float>({biasSize}));
-    bool res = backend->onAcquire(weight.get(), Backend::STATIC);
+    weight.reset(Tensor::createDevice<uint8_t>({(int)weightBytes}));
+    bias.reset(Tensor::createDevice<uint8_t>({(int)biasBytes}));
+    bool res = backend->onAcquireBuffer(weight.get(), Backend::STATIC);
     if (!res) {
         return res;
     }
-    res = backend->onAcquire(bias.get(), Backend::STATIC);
+    res = backend->onAcquireBuffer(bias.get(), Backend::STATIC);
     if (!res) {
         return res;
     }
@@ -634,6 +684,49 @@ void OpCommonUtils::turnRegion2Convert(const Tensor::InsideDescribe::Region& reg
         }
     }
     return;
+}
+bool OpCommonUtils::computeMatMulSize(bool transposeA, bool transposeB, const Tensor* A, const Tensor* B, int& e, int& l, int& h) {
+    auto i0Dim = A->dimensions();
+    auto i1Dim = B->dimensions();
+    if (i0Dim < 1 || i1Dim < 1) {
+        return false;
+    }
+    int w0, h0;
+    int w1, h1;
+    if (i0Dim == 1) {
+        w0 = A->length(0);
+        h0 = 1;
+        transposeA = false;
+    } else {
+        w0 = A->length(i0Dim - 1);
+        h0 = A->length(i0Dim - 2);
+    }
+    if (i1Dim == 1) {
+        w1 = 1;
+        h1 = B->length(0);
+        transposeB = false;
+    } else {
+        w1 = B->length(i1Dim - 1);
+        h1 = B->length(i1Dim - 2);
+    }
+    if (transposeA) {
+        auto t = w0;
+        w0     = h0;
+        h0     = t;
+    }
+    if (transposeB) {
+        auto t = w1;
+        w1     = h1;
+        h1     = t;
+    }
+
+    if (w0 != h1) {
+        return false;
+    }
+    e = h0;
+    l = w0;
+    h = w1;
+    return true;
 }
 
 

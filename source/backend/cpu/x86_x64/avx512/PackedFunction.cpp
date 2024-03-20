@@ -17,6 +17,10 @@
 #include "backend/cpu/BinaryUtils.hpp"
 #include "Vec16.hpp"
 #define PACK_UNIT 16
+#define PACK PACK_UNIT
+#define FLOAT float
+using Vec = Vec16;
+#include "backend/cpu/GridSampler.hpp"
 
 void _AVX512_MNNCopyC4WithStride(const float* source, float* dest, size_t srcStride, size_t dstStride, size_t count) {
     for (int i = 0; i < count; ++i) {
@@ -146,7 +150,7 @@ void _AVX512_MNNConvRunForLineDepthwise(float* dst, const float* src, const floa
 }
 
 static MNNBinaryExecute _AVX512_MNNSelectBinaryFunctionForFloat(int opType) {
-    auto vecF = MNN::selectVector<Vec16, 16>(opType);
+    auto vecF = MNN::selectVector<Vec16, 16, float>(opType);
     if (nullptr != vecF) {
         return vecF;
     }
@@ -690,6 +694,7 @@ void _AVX512_ExtraInit(void* functions) {
     coreFunction->MNNPoolingAvg = (decltype(coreFunction->MNNPoolingAvg))(MNN::poolingAvg<float, Vec16, 16>);
     // Set min value as 1 << 24
     coreFunction->MNNPoolingMax = (decltype(coreFunction->MNNPoolingMax))(MNN::poolingMax<float, Vec16, 16, -16777216>);
+    coreFunction->MNNPoolingMaxWithRedice = (decltype(coreFunction->MNNPoolingMaxWithRedice))(MNN::poolingMaxWithRedice<float, -16777216>);
     coreFunction->MNNSelectBinaryFunctionForFloat = _AVX512_MNNSelectBinaryFunctionForFloat;
     coreFunction->MNNCopyC4WithStride = _AVX512_MNNCopyC4WithStride;
     coreFunction->MNNAddC4WithStride = _AVX512_MNNAddC4WithStride;
@@ -708,10 +713,11 @@ void _AVX512_ExtraInit(void* functions) {
     coreFunction->MNNDeconvRunForLineDepthwise = _AVX512_MNNDeconvRunForLineDepthwise;
     coreFunction->MNNDeconvRunForUnitDepthWise = _AVX512_MNNDeconvRunForUnitDepthWise;
     coreFunction->MNNGridSampleComputeCord = _AVX512_MNNGridSampleComputeCord;
-    coreFunction->MNNGridSampleInterp = _AVX512_MNNGridSampleInterp;
     coreFunction->MNNRoiPoolingMax = _AVX512_MNNRoiPoolingMax;
     coreFunction->MNNRoiAlignMax = _AVX512_MNNRoiAlignMax;
     coreFunction->MNNRoiAlignAvg = _AVX512_MNNRoiAlignAvg;
+    coreFunction->MNNGridSampleInterp = MNNGridSampleInterp;
+    coreFunction->MNNGridSampleInterpGrad = MNNGridSampleInterpGrad;
 
     coreFunction->MNNGetSparseMatMulPackMode = _AVX512_MNNGetSparseMatMulPackMode;
     coreFunction->MNNAdjustOptimalSparseKernel = _AVX512_MNNAdjustOptimalSparseKernel;

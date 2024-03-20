@@ -17,17 +17,22 @@ namespace OpenCL {
 UnaryExecution::UnaryExecution(const std::string& compute, Backend* backend) : Execution(backend) {
     auto openCLBackend = static_cast<OpenCLBackend*>(backend);
     std::set<std::string> buildOptions;
-    buildOptions.emplace(" -DOPERATOR=" + compute);
-    // FUNC_PRINT_ALL(buildOptions.begin()->c_str(), s);
-    auto runtime      = openCLBackend->getOpenCLRuntime();
-    mKernel           = runtime->buildKernel("unary", "unary", buildOptions);
-    mMaxWorkGroupSize = static_cast<uint32_t>(runtime->getMaxWorkGroupSize(mKernel));
+    mBuildOptions.emplace(" -DOPERATOR=" + compute);
 }
 ErrorCode UnaryExecution::onResize(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs) {
     Tensor* input      = inputs[0];
     Tensor* output     = outputs[0];
     auto openCLBackend = static_cast<OpenCLBackend*>(backend());
-    startRecord(openCLBackend->getOpenCLRuntime(), mRecording);
+    
+    auto dataType = inputs[0]->getType();
+    if (dataType.code == halide_type_int){
+        mBuildOptions.emplace("-DOPENCL_INPUT_INT");
+    }
+    // FUNC_PRINT_ALL(buildOptions.begin()->c_str(), s);
+    auto runtime      = openCLBackend->getOpenCLRuntime();
+    mKernel           = runtime->buildKernel("unary", "unary", mBuildOptions);
+    mMaxWorkGroupSize = static_cast<uint32_t>(runtime->getMaxWorkGroupSize(mKernel));
+    openCLBackend->startRecord(mRecording);
 
     std::vector<int> inputShape  = tensorShapeFormat(input);
     std::vector<int> outputShape = tensorShapeFormat(output);
@@ -58,8 +63,8 @@ ErrorCode UnaryExecution::onResize(const std::vector<Tensor*>& inputs, const std
     const std::vector<uint32_t> lws =
     localWS3DDefault(mGlobalWorkSize, mMaxWorkGroupSize, openCLBackend->getOpenCLRuntime(), name, mKernel).first;
     mLocalSize = lws;
-    recordKernel3d(mKernel, mGlobalWorkSize, mLocalSize, openCLBackend->getOpenCLRuntime());
-    endRecord(openCLBackend->getOpenCLRuntime(), mRecording);
+    openCLBackend->recordKernel3d(mKernel, mGlobalWorkSize, mLocalSize);
+    openCLBackend->endRecord(mRecording);
     return NO_ERROR;
 }
 
@@ -77,9 +82,9 @@ ErrorCode UnaryExecution::onExecute(const std::vector<Tensor*>& inputs, const st
     mOpenCLBackend->getOpenCLRuntime()->pushEvent({"Unary", event});
 #else
     auto openCLBackend = static_cast<OpenCLBackend*>(backend());
-    if(openCLBackend->getOpenCLRuntime()->isUseRecordQueue()){
-        if(mOpenCLBackend->getOpenCLRuntime()->isDevideOpRecord())
-            mOpenCLBackend->getOpenCLRuntime()->getRecordings()->emplace_back(mRecording);
+    if(openCLBackend->isUseRecordQueue()){
+        if(mOpenCLBackend->isDevideOpRecord())
+            mOpenCLBackend->addRecord(mRecording);
 #ifdef LOG_VERBOSE
         MNN_PRINT("End UnaryExecution onExecute... \n");
 #endif
@@ -106,7 +111,7 @@ public:
                 case UnaryOpOperation_SQUARE:
                     return new UnaryExecution("in*in", backend);
                 case UnaryOpOperation_RSQRT:
-                    return new UnaryExecution("rsqrt(convert_float4(in))", backend);
+                    return new UnaryExecution("rsqrt(convert_float4(in)>(float4)(0.000001)?convert_float4(in):(float4)(0.000001))", backend);
                 case UnaryOpOperation_NEG:
                     return new UnaryExecution("-(in)", backend);
                 case UnaryOpOperation_EXP:
@@ -176,8 +181,9 @@ public:
     }
 };
 
-OpenCLCreatorRegister<UnaryCreator> __UnaryExecution(OpType_UnaryOp, IMAGE);
-OpenCLCreatorRegister<UnaryCreator> __SigmoidExecution(OpType_Sigmoid, IMAGE);
-OpenCLCreatorRegister<UnaryCreator> __TanhExecution(OpType_TanH, IMAGE);
+REGISTER_OPENCL_OP_CREATOR(UnaryCreator, OpType_UnaryOp, IMAGE);
+REGISTER_OPENCL_OP_CREATOR(UnaryCreator, OpType_Sigmoid, IMAGE);
+REGISTER_OPENCL_OP_CREATOR(UnaryCreator, OpType_TanH, IMAGE);
+
 } // namespace OpenCL
 } // namespace MNN

@@ -46,20 +46,27 @@ public:
     std::string compressionParamsFile = "";
     bool saveStaticModel = false;
     int optimizePrefer = 0;
-    float targetVersion = 1.3;
+    float targetVersion = (float)MNN_VERSION_MAJOR + (float)MNN_VERSION_MINOR * 0.1f;
     int defaultBatchSize = 0;
     int optimizeLevel = 1;
     bool keepInputFormat = false;
     bool alignDenormalizedValue = true;
     bool detectSparseSpeedUp = true;
+    bool convertMatmulToConv = true;
+    bool transformerFuse = false;
     std::string customOpLibs = "";
     std::string authCode = "";
     std::string testDir = "";
+    std::string testConfig;
     float testThredhold = 0.01;
     bool mnn2json = false;
     bool dumpInfo = false;
     bool saveExternalData = false;
     bool inSubGraph = false;
+    // using external data when convert
+    int64_t externalTreshold = 1024 * 64;
+    std::ofstream* externalFile = nullptr;
+    int64_t externalOffset = 0;
 };
 
 #endif // CONFIG_HPP

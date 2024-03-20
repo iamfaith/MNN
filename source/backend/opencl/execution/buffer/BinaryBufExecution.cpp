@@ -18,6 +18,10 @@ namespace OpenCL {
 BinaryBufExecution::BinaryBufExecution(const std::vector<Tensor *> &inputs, const std::string &compute, const MNN::Op *op, Backend *backend)
     : CommonExecution(backend, op), mCompute(compute) {
     mBuildOptions.emplace("-DOPERATOR=" + compute);
+    auto dataType = inputs[0]->getType();
+    if (dataType.code == halide_type_int){
+        mBuildOptions.emplace("-DOPENCL_INPUT_INT");
+    }
 }
 
 uint32_t BinaryBufExecution::realSize(const Tensor* tensor) {
@@ -36,6 +40,7 @@ ErrorCode BinaryBufExecution::SubgroupOnResize(const std::vector<Tensor *> &inpu
     auto inputShape1   = tensorShapeFormat(inputs[1]);
     auto outputShape   = tensorShapeFormat(output);
     auto runTime       = ((OpenCLBackend *)backend())->getOpenCLRuntime();
+    openCLBackend->startRecord(mRecording);
     int shape[4]       = {outputShape[0], outputShape[1], outputShape[2], outputShape[3]};
 
     int fullCount[2] = {1, 1};
@@ -85,6 +90,7 @@ ErrorCode BinaryBufExecution::SubgroupOnResize(const std::vector<Tensor *> &inpu
         ret |= unit.kernel.setArg(index++, static_cast<uint32_t>(outputpad.left));
         ret |= unit.kernel.setArg(index++, static_cast<uint32_t>(outputpad.right));
         MNN_CHECK_CL_SUCCESS(ret, "setArg BinaryBufExecution C16");
+        openCLBackend->recordKernel3d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
     } else {
         mGlobalWorkSize = {(uint32_t)outputShape[2] * outputShape[1], (uint32_t)UP_DIV(outputShape[3], 4),
                                     (uint32_t)outputShape[0]};
@@ -110,6 +116,7 @@ ErrorCode BinaryBufExecution::SubgroupOnResize(const std::vector<Tensor *> &inpu
         
         unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1], mGlobalWorkSize[2]};
         unit.localWorkSize  = {mLocalWorkSize[0], mLocalWorkSize[1], mLocalWorkSize[2]};
+        openCLBackend->recordKernel3d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
     }
     
     for (int i = 2; i < inputs.size(); ++i) {
@@ -152,6 +159,7 @@ ErrorCode BinaryBufExecution::SubgroupOnResize(const std::vector<Tensor *> &inpu
             ret |= unit.kernel.setArg(index++, static_cast<uint32_t>(outputpadtmp.left));
             ret |= unit.kernel.setArg(index++, static_cast<uint32_t>(outputpadtmp.right));
             MNN_CHECK_CL_SUCCESS(ret, "setArg BinaryBufExecution C16 MultiInput");
+            openCLBackend->recordKernel3d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
         } else {
             mGlobalWorkSize = {(uint32_t)outputShape[2] * outputShape[1], (uint32_t)UP_DIV(outputShape[3], 4),
                                     (uint32_t)outputShape[0]};
@@ -177,8 +185,10 @@ ErrorCode BinaryBufExecution::SubgroupOnResize(const std::vector<Tensor *> &inpu
             
             unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1], mGlobalWorkSize[2]};
             unit.localWorkSize  = {mLocalWorkSize[0], mLocalWorkSize[1], mLocalWorkSize[2]};
+            openCLBackend->recordKernel3d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
         }
     }
+    openCLBackend->endRecord(mRecording);
     return NO_ERROR;
 }
 #endif /* MNN_SUPPORT_INTEL_SUBGROUP */
@@ -198,6 +208,7 @@ ErrorCode BinaryBufExecution::onResize(const std::vector<Tensor *> &inputs, cons
         return SubgroupOnResize(inputs, outputs);
     }
 #endif /* MNN_SUPPORT_INTEL_SUBGROUP */
+    openCLBackend->startRecord(mRecording);
     int shape[4] = {outputShape[0], outputShape[1], outputShape[2], UP_DIV(outputShape[3], 4)};
     int fullCount[2] = {1, 1};
     
@@ -231,6 +242,7 @@ ErrorCode BinaryBufExecution::onResize(const std::vector<Tensor *> &inputs, cons
     
     unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1]};
     unit.localWorkSize  = {mLocalWorkSize[0], mLocalWorkSize[1]};
+    openCLBackend->recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
     for (int i = 2; i < inputs.size(); ++i) {
         fullCount[0] = 1;
         fullCount[1] = realSize(inputs[i]) == 1 ? 0 : 1;
@@ -250,7 +262,10 @@ ErrorCode BinaryBufExecution::onResize(const std::vector<Tensor *> &inputs, cons
 
         unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1]};
         unit.localWorkSize  = {mLocalWorkSize[0], mLocalWorkSize[1]};
+        openCLBackend->recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
     }
+    
+    openCLBackend->endRecord(mRecording);
     return NO_ERROR;
 }
 
@@ -315,7 +330,7 @@ public:
                 case BinaryOpOperation_SquaredDifference:
                     return new BinaryBufExecution(inputs, "(in0-in1)*(in0-in1)", op, backend);
                 case BinaryOpOperation_ATAN2:
-                    return new BinaryBufExecution(inputs, "atan(sign(in1)*in0/(fabs(in1)>(FLOAT4)((FLOAT)0.0000001)?fabs(in1):(FLOAT4)((FLOAT)0.0000001)))", op, backend);
+                    return new BinaryBufExecution(inputs, "(in1==(FLOAT4)0?(sign(in0)*(FLOAT4)(PI/2)):(atan(in0/in1)+(in1>(FLOAT4)0?(FLOAT4)0:sign(in0)*(FLOAT4)PI)))", op, backend);
                 case BinaryOpOperation_NOTEQUAL:
                     return new BinaryBufExecution(inputs, "convert_float4(-isnotequal(in0,in1))", op, backend);
                 case BinaryOpOperation_MOD:
@@ -329,8 +344,8 @@ public:
     }
 };
 
-OpenCLCreatorRegister<BinaryBufCreator> __eltwiseBuf_op(OpType_Eltwise, BUFFER);
-OpenCLCreatorRegister<BinaryBufCreator> __binaryBuf_op(OpType_BinaryOp, BUFFER);
+REGISTER_OPENCL_OP_CREATOR(BinaryBufCreator, OpType_Eltwise, BUFFER);
+REGISTER_OPENCL_OP_CREATOR(BinaryBufCreator, OpType_BinaryOp, BUFFER);
 
 } // namespace OpenCL
 } // namespace MNN

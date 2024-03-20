@@ -120,20 +120,12 @@ void runTurnKernelLWS2D(const ::cl::Kernel &kernel, const std::vector<uint32_t> 
 std::pair<std::vector<uint32_t>, uint32_t> localWS3DDefault(const std::vector<uint32_t> &gws, const uint32_t maxWorkGroupSize,
                                        OpenCLRuntime *runtime, const std::string &kernelName, const cl::Kernel &mKernel);
 
+bool localWSTune(const std::map<std::string, std::vector<std::pair<std::vector<uint32_t>, std::pair<std::vector<uint32_t>,  uint32_t>>>> &tuneMap, const std::vector<uint32_t> &gws, const std::string &kernelName, std::pair<std::vector<uint32_t>, uint32_t> &res);
+
 std::pair<std::vector<uint32_t>, uint32_t> localWS2DDefault(const std::vector<uint32_t> &gws, const uint32_t maxWorkGroupSize,
                                        OpenCLRuntime *runtime, const std::string &kernelName, const cl::Kernel &mKernel);
 
 void copyBufferToImage(OpenCLRuntime *runtime, const cl::Buffer &buffer, const cl::Image &image, int w, int h);
-
-void recordKernel2d(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
-                    OpenCLRuntime *runtime);
-
-void recordKernel3d(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
-                    OpenCLRuntime *runtime);
-
-void startRecord(OpenCLRuntime *runtime, cl_recording_qcom &recording);
-
-void endRecord(OpenCLRuntime *runtime, cl_recording_qcom &recording);
 
 } // namespace OpenCL
 } // namespace MNN

@@ -115,6 +115,9 @@ struct PadParamT;
 struct LayerNorm;
 struct LayerNormT;
 
+struct GroupNorm;
+struct GroupNormT;
+
 struct RandomUniform;
 struct RandomUniformT;
 
@@ -193,6 +196,8 @@ inline const flatbuffers::TypeTable *OneHotParamTypeTable();
 inline const flatbuffers::TypeTable *PadParamTypeTable();
 
 inline const flatbuffers::TypeTable *LayerNormTypeTable();
+
+inline const flatbuffers::TypeTable *GroupNormTypeTable();
 
 inline const flatbuffers::TypeTable *RandomUniformTypeTable();
 
@@ -1477,6 +1482,7 @@ struct UnaryOpT : public flatbuffers::NativeTable {
   typedef UnaryOp TableType;
   UnaryOpOperation opType;
   DataType T;
+  std::vector<int8_t> tableInt8;
   UnaryOpT()
       : opType(UnaryOpOperation_ABS),
         T(DataType_DT_INVALID) {
@@ -1494,10 +1500,15 @@ struct UnaryOp FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   DataType T() const {
     return static_cast<DataType>(GetField<int32_t>(6, 0));
   }
+  const flatbuffers::Vector<int8_t> *tableInt8() const {
+    return GetPointer<const flatbuffers::Vector<int8_t> *>(8);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<int32_t>(verifier, 4) &&
            VerifyField<int32_t>(verifier, 6) &&
+           VerifyOffset(verifier, 8) &&
+           verifier.VerifyVector(tableInt8()) &&
            verifier.EndTable();
   }
   UnaryOpT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -1514,6 +1525,9 @@ struct UnaryOpBuilder {
   void add_T(DataType T) {
     fbb_.AddElement<int32_t>(6, static_cast<int32_t>(T), 0);
   }
+  void add_tableInt8(flatbuffers::Offset<flatbuffers::Vector<int8_t>> tableInt8) {
+    fbb_.AddOffset(8, tableInt8);
+  }
   explicit UnaryOpBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1529,8 +1543,10 @@ struct UnaryOpBuilder {
 inline flatbuffers::Offset<UnaryOp> CreateUnaryOp(
     flatbuffers::FlatBufferBuilder &_fbb,
     UnaryOpOperation opType = UnaryOpOperation_ABS,
-    DataType T = DataType_DT_INVALID) {
+    DataType T = DataType_DT_INVALID,
+    flatbuffers::Offset<flatbuffers::Vector<int8_t>> tableInt8 = 0) {
   UnaryOpBuilder builder_(_fbb);
+  builder_.add_tableInt8(tableInt8);
   builder_.add_T(T);
   builder_.add_opType(opType);
   return builder_.Finish();
@@ -3209,6 +3225,126 @@ inline flatbuffers::Offset<LayerNorm> CreateLayerNorm(
 
 flatbuffers::Offset<LayerNorm> CreateLayerNorm(flatbuffers::FlatBufferBuilder &_fbb, const LayerNormT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
 
+struct GroupNormT : public flatbuffers::NativeTable {
+  typedef GroupNorm TableType;
+  int32_t axis;
+  float epsilon;
+  std::vector<float> gamma;
+  std::vector<float> beta;
+  int32_t group;
+  int32_t bSwish;
+  std::vector<int64_t> external;
+  GroupNormT()
+      : axis(0),
+        epsilon(0.0f),
+        group(1),
+        bSwish(0) {
+  }
+};
+
+struct GroupNorm FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef GroupNormT NativeTableType;
+  static const flatbuffers::TypeTable *MiniReflectTypeTable() {
+    return GroupNormTypeTable();
+  }
+  int32_t axis() const {
+    return GetField<int32_t>(4, 0);
+  }
+  float epsilon() const {
+    return GetField<float>(6, 0.0f);
+  }
+  const flatbuffers::Vector<float> *gamma() const {
+    return GetPointer<const flatbuffers::Vector<float> *>(8);
+  }
+  const flatbuffers::Vector<float> *beta() const {
+    return GetPointer<const flatbuffers::Vector<float> *>(10);
+  }
+  int32_t group() const {
+    return GetField<int32_t>(12, 1);
+  }
+  int32_t bSwish() const {
+    return GetField<int32_t>(14, 0);
+  }
+  const flatbuffers::Vector<int64_t> *external() const {
+    return GetPointer<const flatbuffers::Vector<int64_t> *>(16);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<int32_t>(verifier, 4) &&
+           VerifyField<float>(verifier, 6) &&
+           VerifyOffset(verifier, 8) &&
+           verifier.VerifyVector(gamma()) &&
+           VerifyOffset(verifier, 10) &&
+           verifier.VerifyVector(beta()) &&
+           VerifyField<int32_t>(verifier, 12) &&
+           VerifyField<int32_t>(verifier, 14) &&
+           VerifyOffset(verifier, 16) &&
+           verifier.VerifyVector(external()) &&
+           verifier.EndTable();
+  }
+  GroupNormT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  void UnPackTo(GroupNormT *_o, const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  static flatbuffers::Offset<GroupNorm> Pack(flatbuffers::FlatBufferBuilder &_fbb, const GroupNormT* _o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+};
+
+struct GroupNormBuilder {
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_axis(int32_t axis) {
+    fbb_.AddElement<int32_t>(4, axis, 0);
+  }
+  void add_epsilon(float epsilon) {
+    fbb_.AddElement<float>(6, epsilon, 0.0f);
+  }
+  void add_gamma(flatbuffers::Offset<flatbuffers::Vector<float>> gamma) {
+    fbb_.AddOffset(8, gamma);
+  }
+  void add_beta(flatbuffers::Offset<flatbuffers::Vector<float>> beta) {
+    fbb_.AddOffset(10, beta);
+  }
+  void add_group(int32_t group) {
+    fbb_.AddElement<int32_t>(12, group, 1);
+  }
+  void add_bSwish(int32_t bSwish) {
+    fbb_.AddElement<int32_t>(14, bSwish, 0);
+  }
+  void add_external(flatbuffers::Offset<flatbuffers::Vector<int64_t>> external) {
+    fbb_.AddOffset(16, external);
+  }
+  explicit GroupNormBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  GroupNormBuilder &operator=(const GroupNormBuilder &);
+  flatbuffers::Offset<GroupNorm> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<GroupNorm>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<GroupNorm> CreateGroupNorm(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    int32_t axis = 0,
+    float epsilon = 0.0f,
+    flatbuffers::Offset<flatbuffers::Vector<float>> gamma = 0,
+    flatbuffers::Offset<flatbuffers::Vector<float>> beta = 0,
+    int32_t group = 1,
+    int32_t bSwish = 0,
+    flatbuffers::Offset<flatbuffers::Vector<int64_t>> external = 0) {
+  GroupNormBuilder builder_(_fbb);
+  builder_.add_external(external);
+  builder_.add_bSwish(bSwish);
+  builder_.add_group(group);
+  builder_.add_beta(beta);
+  builder_.add_gamma(gamma);
+  builder_.add_epsilon(epsilon);
+  builder_.add_axis(axis);
+  return builder_.Finish();
+}
+
+flatbuffers::Offset<GroupNorm> CreateGroupNorm(flatbuffers::FlatBufferBuilder &_fbb, const GroupNormT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+
 struct RandomUniformT : public flatbuffers::NativeTable {
   typedef RandomUniform TableType;
   int32_t seed;
@@ -3881,6 +4017,7 @@ inline void UnaryOp::UnPackTo(UnaryOpT *_o, const flatbuffers::resolver_function
   (void)_resolver;
   { auto _e = opType(); _o->opType = _e; };
   { auto _e = T(); _o->T = _e; };
+  { auto _e = tableInt8(); if (_e) { _o->tableInt8.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->tableInt8[_i] = _e->Get(_i); } } };
 }
 
 inline flatbuffers::Offset<UnaryOp> UnaryOp::Pack(flatbuffers::FlatBufferBuilder &_fbb, const UnaryOpT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -3893,10 +4030,12 @@ inline flatbuffers::Offset<UnaryOp> CreateUnaryOp(flatbuffers::FlatBufferBuilder
   struct _VectorArgs { flatbuffers::FlatBufferBuilder *__fbb; const UnaryOpT* __o; const flatbuffers::rehasher_function_t *__rehasher; } _va = { &_fbb, _o, _rehasher}; (void)_va;
   auto _opType = _o->opType;
   auto _T = _o->T;
+  auto _tableInt8 = _o->tableInt8.size() ? _fbb.CreateVector(_o->tableInt8) : 0;
   return MNN::CreateUnaryOp(
       _fbb,
       _opType,
-      _T);
+      _T,
+      _tableInt8);
 }
 
 inline TopKV2T *TopKV2::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -4614,6 +4753,50 @@ inline flatbuffers::Offset<LayerNorm> CreateLayerNorm(flatbuffers::FlatBufferBui
       _external);
 }
 
+inline GroupNormT *GroupNorm::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
+  auto _o = new GroupNormT();
+  UnPackTo(_o, _resolver);
+  return _o;
+}
+
+inline void GroupNorm::UnPackTo(GroupNormT *_o, const flatbuffers::resolver_function_t *_resolver) const {
+  (void)_o;
+  (void)_resolver;
+  { auto _e = axis(); _o->axis = _e; };
+  { auto _e = epsilon(); _o->epsilon = _e; };
+  { auto _e = gamma(); if (_e) { _o->gamma.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->gamma[_i] = _e->Get(_i); } } };
+  { auto _e = beta(); if (_e) { _o->beta.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->beta[_i] = _e->Get(_i); } } };
+  { auto _e = group(); _o->group = _e; };
+  { auto _e = bSwish(); _o->bSwish = _e; };
+  { auto _e = external(); if (_e) { _o->external.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->external[_i] = _e->Get(_i); } } };
+}
+
+inline flatbuffers::Offset<GroupNorm> GroupNorm::Pack(flatbuffers::FlatBufferBuilder &_fbb, const GroupNormT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
+  return CreateGroupNorm(_fbb, _o, _rehasher);
+}
+
+inline flatbuffers::Offset<GroupNorm> CreateGroupNorm(flatbuffers::FlatBufferBuilder &_fbb, const GroupNormT *_o, const flatbuffers::rehasher_function_t *_rehasher) {
+  (void)_rehasher;
+  (void)_o;
+  struct _VectorArgs { flatbuffers::FlatBufferBuilder *__fbb; const GroupNormT* __o; const flatbuffers::rehasher_function_t *__rehasher; } _va = { &_fbb, _o, _rehasher}; (void)_va;
+  auto _axis = _o->axis;
+  auto _epsilon = _o->epsilon;
+  auto _gamma = _o->gamma.size() ? _fbb.CreateVector(_o->gamma) : 0;
+  auto _beta = _o->beta.size() ? _fbb.CreateVector(_o->beta) : 0;
+  auto _group = _o->group;
+  auto _bSwish = _o->bSwish;
+  auto _external = _o->external.size() ? _fbb.CreateVector(_o->external) : 0;
+  return MNN::CreateGroupNorm(
+      _fbb,
+      _axis,
+      _epsilon,
+      _gamma,
+      _beta,
+      _group,
+      _bSwish,
+      _external);
+}
+
 inline RandomUniformT *RandomUniform::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
   auto _o = new RandomUniformT();
   UnPackTo(_o, _resolver);
@@ -5196,7 +5379,8 @@ inline const flatbuffers::TypeTable *ReduceJoinTypeTable() {
 inline const flatbuffers::TypeTable *UnaryOpTypeTable() {
   static const flatbuffers::TypeCode type_codes[] = {
     { flatbuffers::ET_INT, 0, 0 },
-    { flatbuffers::ET_INT, 0, 1 }
+    { flatbuffers::ET_INT, 0, 1 },
+    { flatbuffers::ET_CHAR, 1, -1 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
     UnaryOpOperationTypeTable,
@@ -5204,10 +5388,11 @@ inline const flatbuffers::TypeTable *UnaryOpTypeTable() {
   };
   static const char * const names[] = {
     "opType",
-    "T"
+    "T",
+    "tableInt8"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 2, type_codes, type_refs, nullptr, names
+    flatbuffers::ST_TABLE, 3, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
@@ -5618,6 +5803,31 @@ inline const flatbuffers::TypeTable *LayerNormTypeTable() {
   };
   static const flatbuffers::TypeTable tt = {
     flatbuffers::ST_TABLE, 6, type_codes, nullptr, nullptr, names
+  };
+  return &tt;
+}
+
+inline const flatbuffers::TypeTable *GroupNormTypeTable() {
+  static const flatbuffers::TypeCode type_codes[] = {
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_FLOAT, 0, -1 },
+    { flatbuffers::ET_FLOAT, 1, -1 },
+    { flatbuffers::ET_FLOAT, 1, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_LONG, 1, -1 }
+  };
+  static const char * const names[] = {
+    "axis",
+    "epsilon",
+    "gamma",
+    "beta",
+    "group",
+    "bSwish",
+    "external"
+  };
+  static const flatbuffers::TypeTable tt = {
+    flatbuffers::ST_TABLE, 7, type_codes, nullptr, nullptr, names
   };
   return &tt;
 }
